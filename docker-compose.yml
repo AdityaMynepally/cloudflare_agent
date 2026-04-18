@@ -1,0 +1,33 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: web-audit-backend
+    environment:
+      - API_PORT=8000
+      - LLM_PROVIDER=${LLM_PROVIDER:-openai}
+      - AI_ANALYSIS_ENABLED=${AI_ANALYSIS_ENABLED:-true}
+      - AI_VISION_ENABLED=${AI_VISION_ENABLED:-false}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o}
+      - AZURE_OPENAI_API_KEY=${AZURE_OPENAI_API_KEY:-}
+      - AZURE_OPENAI_ENDPOINT=${AZURE_OPENAI_ENDPOINT:-}
+      - AZURE_OPENAI_DEPLOYMENT=${AZURE_OPENAI_DEPLOYMENT:-gpt-4o}
+      - AZURE_OPENAI_API_VERSION=${AZURE_OPENAI_API_VERSION:-2024-10-21}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      - GOOGLE_GEMINI_MODEL=${GOOGLE_GEMINI_MODEL:-gemini-2.0-flash}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - ANTHROPIC_MODEL=${ANTHROPIC_MODEL:-claude-sonnet-4-5-20250929}
+      - AGENT_MAX_PAGES=${AGENT_MAX_PAGES:-8}
+      - AGENT_COMMAND_TIMEOUT=${AGENT_COMMAND_TIMEOUT:-30}
+      - DOM_MAX_CHARS=${DOM_MAX_CHARS:-4000}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend/results:/app/results
+      - ./backend/screenshots:/app/screenshots
+      - ./ui:/app/ui
+    restart: unless-stopped

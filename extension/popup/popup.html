@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Web Audit</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="popup-container">
+    <div class="header">
+      <h1>Web Audit</h1>
+      <button id="settings-btn" class="icon-btn" title="Settings">&#9881;</button>
+    </div>
+
+    <div class="status-bar">
+      <span class="status-dot" id="status-dot"></span>
+      <span id="status-text">Checking...</span>
+      <span id="ws-status" style="margin-left: auto; font-size: 11px; color: #888;"></span>
+    </div>
+
+    <div style="text-align:center; padding: 16px 0;">
+      <p style="color:#555; margin-bottom:12px;">
+        Open the chat UI to start auditing websites.
+      </p>
+      <button id="open-chat-btn" class="btn btn-primary" style="width:100%;">
+        Open Audit Chat
+      </button>
+    </div>
+
+    <div class="footer">
+      <button id="reconnect-btn" class="btn btn-link">Reconnect</button>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

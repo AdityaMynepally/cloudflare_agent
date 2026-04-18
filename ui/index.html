@@ -1,0 +1,955 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>WebSentinel AI — by Stream Companies</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --orange:  #f4793e;
+      --dark:    #252525;
+      --gray:    #6d6d6d;
+      --light:   #f7f7f7;
+      --white:   #ffffff;
+      --green:   #27ae60;
+      --red:     #e74c3c;
+      --blue:    #566FB8;
+      --radius:  8px;
+      --card-bg: #1e1e1e;
+      --border:  #333333;
+    }
+
+    body {
+      font-family: 'Poppins', sans-serif;
+      background: var(--dark);
+      color: #e0e0e0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 0 16px 60px;
+    }
+
+    /* ---- Top nav bar ---- */
+    .topbar {
+      width: 100%;
+      background: #1a1a1a;
+      border-bottom: 2px solid var(--orange);
+      padding: 10px 32px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      margin-bottom: 36px;
+    }
+    .topbar img.logo {
+      height: 36px;
+      width: auto;
+      filter: brightness(0) invert(1); /* force white on dark bg */
+    }
+    .topbar .divider {
+      width: 1px;
+      height: 28px;
+      background: #444;
+    }
+    .topbar .product-name {
+      font-size: 1.05rem;
+      font-weight: 600;
+      color: var(--white);
+      letter-spacing: 0.02em;
+    }
+    .topbar .product-name span { color: var(--orange); }
+
+    /* ---- Extension pill ---- */
+    #ext-status {
+      margin-left: auto;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 12px;
+      border-radius: 999px;
+      font-size: 0.78rem;
+      background: #2a2a2a;
+      border: 1px solid var(--border);
+    }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--gray); }
+    #ext-status.connected   .dot  { background: var(--green); }
+    #ext-status.connected   span  { color: #7dcea0; }
+    #ext-status.disconnected .dot  { background: var(--red); }
+    #ext-status.disconnected span  { color: #f1948a; }
+
+    /* ---- Main card ---- */
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 28px 24px;
+      width: 100%;
+      max-width: 760px;
+    }
+
+    .card-title {
+      font-size: 1.35rem;
+      font-weight: 700;
+      color: var(--white);
+      margin-bottom: 4px;
+    }
+    .card-sub {
+      font-size: 0.85rem;
+      color: var(--gray);
+      margin-bottom: 20px;
+    }
+
+    /* ---- Input row ---- */
+    .input-row { display: flex; gap: 10px; }
+    .input-row input {
+      flex: 1;
+      padding: 11px 14px;
+      border-radius: var(--radius);
+      border: 1px solid var(--border);
+      background: #111;
+      color: var(--white);
+      font-family: 'Poppins', sans-serif;
+      font-size: 0.92rem;
+      outline: none;
+      transition: border-color .2s;
+    }
+    .input-row input:focus { border-color: var(--orange); }
+    .input-row input::placeholder { color: #555; }
+
+    button {
+      padding: 11px 22px;
+      border-radius: var(--radius);
+      border: none;
+      cursor: pointer;
+      font-family: 'Poppins', sans-serif;
+      font-size: 0.88rem;
+      font-weight: 600;
+      transition: opacity .15s, background .15s;
+    }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    #audit-btn {
+      background: var(--orange);
+      color: var(--white);
+      white-space: nowrap;
+    }
+    #audit-btn:hover:not(:disabled) { background: #d96535; }
+
+    /* ---- Progress ---- */
+    #progress-section { display: none; margin-top: 22px; }
+
+    .progress-track {
+      height: 5px;
+      background: #333;
+      border-radius: 999px;
+      overflow: hidden;
+      margin-bottom: 12px;
+    }
+    .progress-fill {
+      height: 100%;
+      background: var(--orange);
+      border-radius: 999px;
+      transition: width .4s ease;
+      width: 0%;
+    }
+
+    #log {
+      background: #111;
+      border: 1px solid #2a2a2a;
+      border-radius: var(--radius);
+      padding: 10px 12px;
+      max-height: 200px;
+      overflow-y: auto;
+      font-size: 0.78rem;
+      line-height: 1.7;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      color: #888;
+    }
+    .line       { display: block; }
+    .line.info  { color: #93c5fd; }
+    .line.ok    { color: #86efac; }
+    .line.warn  { color: #fcd34d; }
+    .line.err   { color: #f87171; }
+    .line.vdp   { color: var(--orange); font-weight: 600; }
+    .line.form  { color: #c084fc; font-weight: 600; }
+
+    /* ---- Summary panel ---- */
+    #summary-section {
+      display: none;
+      margin-top: 22px;
+      background: #181818;
+      border: 1px solid var(--border);
+      border-left: 3px solid var(--orange);
+      border-radius: var(--radius);
+      padding: 18px 20px;
+    }
+    #summary-section h3 {
+      font-size: 0.9rem;
+      font-weight: 600;
+      color: var(--orange);
+      margin-bottom: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    #summary-text {
+      font-size: 0.88rem;
+      color: #ccc;
+      line-height: 1.7;
+      margin-bottom: 14px;
+    }
+    #recs-list {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    #recs-list li {
+      font-size: 0.82rem;
+      color: #bbb;
+      padding-left: 18px;
+      position: relative;
+      line-height: 1.5;
+    }
+    #recs-list li::before {
+      content: '→';
+      color: var(--orange);
+      position: absolute;
+      left: 0;
+    }
+
+    /* ---- Stats + screenshots ---- */
+    #results-section { display: none; margin-top: 20px; }
+
+    .stats-row {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+      gap: 10px;
+      margin-bottom: 16px;
+    }
+    .stat {
+      background: #111;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 12px 10px;
+      text-align: center;
+    }
+    .stat .num { font-size: 1.5rem; font-weight: 700; color: var(--white); }
+    .stat .lbl { font-size: 0.72rem; color: var(--gray); margin-top: 2px; }
+    .stat.vdp   .num { color: var(--orange); }
+    .stat.grade .num { color: var(--green); }
+
+    #screenshots-wrap h3 {
+      font-size: 0.82rem;
+      font-weight: 600;
+      color: var(--gray);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 10px;
+    }
+    .shots-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+      gap: 8px;
+    }
+    .thumb {
+      position: relative;
+      background: #111;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      overflow: hidden;
+      aspect-ratio: 16/10;
+    }
+    .thumb img { width: 100%; height: 100%; object-fit: cover; }
+    .thumb .badge {
+      position: absolute;
+      top: 4px; left: 4px;
+      background: rgba(0,0,0,.65);
+      color: #fff;
+      font-size: 0.62rem;
+      padding: 2px 6px;
+      border-radius: 4px;
+    }
+    .thumb.vdp-t   { border-color: var(--orange); }
+    .thumb.vdp-t   .badge { background: var(--orange); }
+    .thumb.form-t  { border-color: #c084fc; }
+    .thumb.form-t  .badge { background: #9333ea; }
+    .thumb.feat-t  { border-color: var(--green); }
+    .thumb.feat-t  .badge { background: #166534; }
+
+    /* ---- Technical Findings ---- */
+    #findings-section { display: none; margin-top: 20px; }
+
+    .findings-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+
+    .finding-card {
+      background: #111;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px 12px;
+    }
+    .finding-card.has-issues { border-left: 3px solid var(--orange); }
+    .finding-card.no-issues  { border-left: 3px solid var(--green); }
+
+    .finding-card h4 {
+      font-size: 0.78rem;
+      font-weight: 600;
+      color: var(--gray);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 6px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .finding-card h4 .count {
+      font-size: 0.9rem;
+      font-weight: 700;
+      color: var(--white);
+    }
+    .finding-card h4 .count.zero { color: var(--green); }
+
+    .finding-items {
+      list-style: none;
+      font-size: 0.72rem;
+      color: #aaa;
+      max-height: 120px;
+      overflow-y: auto;
+      line-height: 1.6;
+    }
+    .finding-items li {
+      border-bottom: 1px solid #222;
+      padding: 2px 0;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .finding-items li:last-child { border-bottom: none; }
+    .finding-items .badge-status {
+      display: inline-block;
+      background: var(--red);
+      color: #fff;
+      font-size: 0.65rem;
+      padding: 0 4px;
+      border-radius: 3px;
+      margin-right: 4px;
+    }
+    .finding-items .badge-size {
+      display: inline-block;
+      background: var(--orange);
+      color: #fff;
+      font-size: 0.65rem;
+      padding: 0 4px;
+      border-radius: 3px;
+      margin-right: 4px;
+    }
+    .finding-items .ok-msg { color: var(--green); }
+
+    .load-time-table {
+      width: 100%;
+      font-size: 0.72rem;
+      border-collapse: collapse;
+    }
+    .load-time-table th {
+      text-align: left;
+      color: var(--gray);
+      font-weight: 600;
+      padding: 3px 6px;
+      border-bottom: 1px solid #333;
+    }
+    .load-time-table td {
+      padding: 3px 6px;
+      color: #bbb;
+      border-bottom: 1px solid #1a1a1a;
+      max-width: 220px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .load-time-table .slow { color: #f87171; }
+    .load-time-table .ok   { color: #86efac; }
+    .avg-badge {
+      display: inline-block;
+      background: #1a1a1a;
+      border: 1px solid #333;
+      border-radius: 4px;
+      padding: 2px 8px;
+      font-size: 0.72rem;
+      color: #ddd;
+      margin-bottom: 6px;
+    }
+
+    /* ---- Dealership Features (Sprint 2) ---- */
+    #features-section {
+      display: none;
+      margin-top: 20px;
+    }
+    #features-section .section-title {
+      font-size: 0.82rem;
+      font-weight: 600;
+      color: var(--gray);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 10px;
+    }
+    .features-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+      gap: 8px;
+    }
+    .feature-pill {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      background: #111;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 10px 12px;
+    }
+    .feature-pill.found  { border-left: 3px solid var(--green); }
+    .feature-pill.missing{ border-left: 3px solid #444; opacity: 0.6; }
+    .feature-pill .ficon {
+      font-size: 1.1rem;
+      flex-shrink: 0;
+    }
+    .feature-pill .finfo { flex: 1; min-width: 0; }
+    .feature-pill .fname {
+      font-size: 0.78rem;
+      font-weight: 600;
+      color: var(--white);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .feature-pill .fdetail {
+      font-size: 0.68rem;
+      color: #777;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      margin-top: 1px;
+    }
+    .feature-pill.found .fname  { color: #86efac; }
+
+    /* ---- Download buttons ---- */
+    .download-row {
+      display: none;
+      gap: 10px;
+      margin-top: 18px;
+    }
+    .dl-btn {
+      flex: 1;
+      padding: 12px;
+      border-radius: var(--radius);
+      font-size: 0.9rem;
+      font-weight: 600;
+      text-align: center;
+      cursor: pointer;
+      border: none;
+    }
+    #download-pptx { background: var(--orange); color: var(--white); }
+    #download-pptx:hover:not(:disabled) { background: #d96535; }
+    #download-pdf  { background: #2a2a2a; color: var(--white); border: 1px solid var(--border); }
+    #download-pdf:hover:not(:disabled)  { background: #383838; }
+
+    footer {
+      margin-top: 32px;
+      font-size: 0.75rem;
+      color: #444;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Top nav -->
+  <div class="topbar">
+    <img
+      class="logo"
+      src="https://www.streamcompanies.com/wp-content/uploads/2024/08/Stream_Logo.svg"
+      alt="Stream Companies"
+      onerror="this.style.display='none'"
+    />
+    <div class="divider"></div>
+    <span class="product-name">WebSentinel <span>AI</span></span>
+    <div id="ext-status" class="disconnected">
+      <span class="dot"></span>
+      <span id="ext-label">Extension: checking…</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <p class="card-title">Site Audit</p>
+    <p class="card-sub">Screenshot every page, capture inventory &amp; VDP, fill contact form, download PPT or PDF.</p>
+
+    <div class="input-row">
+      <input
+        id="url-input"
+        type="url"
+        placeholder="audit https://www.driveenvy.com/"
+        autocomplete="off"
+        spellcheck="false"
+      />
+      <button id="audit-btn">Audit</button>
+    </div>
+
+    <!-- Progress -->
+    <div id="progress-section">
+      <div class="progress-track" style="margin-top:16px;">
+        <div class="progress-fill" id="progress-bar"></div>
+      </div>
+      <div id="log"></div>
+    </div>
+
+    <!-- AI Summary -->
+    <div id="summary-section">
+      <h3>AI Audit Summary</h3>
+      <p id="summary-text"></p>
+      <ul id="recs-list"></ul>
+    </div>
+
+    <!-- Stats + Screenshots -->
+    <div id="results-section">
+      <div class="stats-row" id="stats-row"></div>
+      <div id="screenshots-wrap">
+        <h3>Captured Screenshots</h3>
+        <div class="shots-grid" id="shots-grid"></div>
+      </div>
+    </div>
+
+    <!-- Technical Findings -->
+    <div id="findings-section">
+      <div class="findings-grid">
+        <!-- Broken Links -->
+        <div class="finding-card" id="fc-links">
+          <h4>Broken Links <span class="count" id="fc-links-count">—</span></h4>
+          <ul class="finding-items" id="fc-links-list"></ul>
+        </div>
+        <!-- Broken Images -->
+        <div class="finding-card" id="fc-images">
+          <h4>Broken Images <span class="count" id="fc-images-count">—</span></h4>
+          <ul class="finding-items" id="fc-images-list"></ul>
+        </div>
+        <!-- Oversized Images -->
+        <div class="finding-card" id="fc-oversized">
+          <h4>Oversized Images &gt;500KB <span class="count" id="fc-oversized-count">—</span></h4>
+          <ul class="finding-items" id="fc-oversized-list"></ul>
+        </div>
+        <!-- JS Errors -->
+        <div class="finding-card" id="fc-jserrors">
+          <h4>JS Errors <span class="count" id="fc-jserrors-count">—</span></h4>
+          <ul class="finding-items" id="fc-jserrors-list"></ul>
+        </div>
+      </div>
+      <!-- Page Load Times -->
+      <div class="finding-card" id="fc-loadtimes" style="margin-bottom:12px;">
+        <h4>Page Load Times <span class="count" id="fc-loadtimes-avg">—</span></h4>
+        <div id="fc-loadtimes-avgs" style="margin-bottom:6px;"></div>
+        <div style="max-height:160px; overflow-y:auto;">
+          <table class="load-time-table">
+            <thead><tr><th>Viewport</th><th>Load (ms)</th><th>Page</th></tr></thead>
+            <tbody id="fc-loadtimes-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Dealership Features (Sprint 2) -->
+    <div id="features-section">
+      <p class="section-title">Dealership Features Detected</p>
+      <div class="features-grid" id="features-grid"></div>
+    </div>
+
+    <!-- Download buttons -->
+    <div class="download-row" id="download-row">
+      <button class="dl-btn" id="download-pptx">⬇ Download PowerPoint</button>
+      <button class="dl-btn" id="download-pdf">⬇ Download PDF</button>
+    </div>
+  </div>
+
+  <footer>Powered by Stream Companies · WebSentinel AI</footer>
+
+<script>
+  const API        = '';
+  const SESSION_ID = 'ui_' + Math.random().toString(36).substring(2, 10);
+  let eventSource  = null;
+
+  /* ---------- DOM refs ---------- */
+  const urlInput    = document.getElementById('url-input');
+  const auditBtn    = document.getElementById('audit-btn');
+  const progressSec = document.getElementById('progress-section');
+  const progressBar = document.getElementById('progress-bar');
+  const logEl       = document.getElementById('log');
+  const summarySec  = document.getElementById('summary-section');
+  const summaryText = document.getElementById('summary-text');
+  const recsList    = document.getElementById('recs-list');
+  const resultsSec  = document.getElementById('results-section');
+  const statsRow    = document.getElementById('stats-row');
+  const shotsGrid   = document.getElementById('shots-grid');
+  const downloadRow = document.getElementById('download-row');
+  const dlPptx      = document.getElementById('download-pptx');
+  const dlPdf       = document.getElementById('download-pdf');
+  const extStatus   = document.getElementById('ext-status');
+  const extLabel    = document.getElementById('ext-label');
+
+  /* ---------- Extension status ---------- */
+  async function checkExt() {
+    try {
+      const r = await fetch(`${API}/api/chat/extension-status`);
+      const d = await r.json();
+      extStatus.className = d.connected ? 'connected' : 'disconnected';
+      extLabel.textContent = d.connected
+        ? `Extension connected (${d.count})`
+        : 'Extension: not connected';
+    } catch {
+      extStatus.className = 'disconnected';
+      extLabel.textContent = 'Extension: backend offline';
+    }
+  }
+  checkExt();
+  setInterval(checkExt, 5000);
+
+  /* ---------- Logging ---------- */
+  function log(msg, type = 'info') {
+    const span = document.createElement('span');
+    span.className = `line ${type}`;
+    span.textContent = `[${ts()}] ${msg}`;
+    logEl.appendChild(span);
+    logEl.appendChild(document.createTextNode('\n'));
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+  function ts() {
+    return new Date().toLocaleTimeString([], { hour12: false });
+  }
+  function setProgress(pct) {
+    progressBar.style.width = Math.min(100, pct) + '%';
+  }
+
+  /* ---------- Parse URL ---------- */
+  function parseUrl(raw) {
+    raw = raw.trim().replace(/^audit\s+/i, '');
+    if (!raw.startsWith('http')) raw = 'https://' + raw;
+    try { new URL(raw); return raw; } catch { return null; }
+  }
+
+  /* ---------- Audit ---------- */
+  auditBtn.addEventListener('click', startAudit);
+  urlInput.addEventListener('keydown', e => { if (e.key === 'Enter') startAudit(); });
+
+  async function startAudit() {
+    const url = parseUrl(urlInput.value);
+    if (!url) { alert('Please enter a valid URL.'); return; }
+
+    auditBtn.disabled = true;
+    downloadRow.style.display = 'none';
+    progressSec.style.display = 'block';
+    summarySec.style.display  = 'none';
+    resultsSec.style.display  = 'none';
+    logEl.textContent = '';
+    statsRow.innerHTML = '';
+    shotsGrid.innerHTML = '';
+    document.getElementById('findings-section').style.display = 'none';
+    document.getElementById('features-section').style.display = 'none';
+    document.getElementById('features-grid').innerHTML = '';
+    setProgress(5);
+
+    log(`Starting audit: ${url}`);
+
+    if (eventSource) { eventSource.close(); }
+    eventSource = new EventSource(`${API}/api/chat/stream/${SESSION_ID}`);
+    bindSSE(eventSource);
+
+    try {
+      const res = await fetch(`${API}/api/chat/message`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: SESSION_ID, message: `audit ${url}` }),
+      });
+      const d = await res.json();
+      log(d.response || 'Audit started.');
+    } catch (e) {
+      log(`Failed to start: ${e.message}`, 'err');
+      auditBtn.disabled = false;
+    }
+  }
+
+  /* ---------- SSE ---------- */
+  function bindSSE(es) {
+    es.addEventListener('progress', e => {
+      const d = JSON.parse(e.data);
+      const msg = d.message || '';
+      const st  = d.status || '';
+      if (st === 'discovering')    { setProgress(12); log(msg); }
+      else if (st === 'inventory') { setProgress(28); log(msg, 'warn'); }
+      else if (st === 'vdp')       { setProgress(38); log(msg, 'vdp'); }
+      else if (st === 'contact_form') { setProgress(48); log(msg, 'form'); }
+      else if (st === 'auditing')  {
+        const pct = 50 + ((d.currentPage || 1) / Math.max(d.totalPages || 1, 1)) * 30;
+        setProgress(pct);
+        log(msg);
+      }
+      else if (st === 'summarizing') { setProgress(90); log(msg); }
+      else { log(msg); }
+    });
+
+    es.addEventListener('page_result', e => {
+      const d = JSON.parse(e.data);
+      log(`Captured: ${d.title || d.url || 'page'} (${d.viewport || 'desktop'})`, 'ok');
+    });
+
+    es.addEventListener('complete', e => {
+      const d = JSON.parse(e.data);
+      setProgress(100);
+      log('Audit complete!', 'ok');
+      if (d.has_vdp)         log(`VDP: ${d.vdp_url}`, 'vdp');
+      es.close();
+      auditBtn.disabled = false;
+      fetchAndShowResults(d);
+    });
+
+    es.addEventListener('error', e => {
+      try { log(JSON.parse(e.data).message || 'Error.', 'err'); } catch {}
+      auditBtn.disabled = false;
+    });
+  }
+
+  /* ---------- Results ---------- */
+  async function fetchAndShowResults(completionData) {
+    try {
+      const res  = await fetch(`${API}/api/chat/sessions/${SESSION_ID}/results`);
+      const full = await res.json();
+      showStats(full, completionData);
+      showSummary(full);
+      renderShots(full);
+      renderFindings(full);
+      renderFeatures(full);
+      downloadRow.style.display = 'flex';
+    } catch (e) {
+      log(`Could not load results: ${e.message}`, 'err');
+    }
+  }
+
+  function showStats(full, cData) {
+    resultsSec.style.display = 'block';
+    const stats = [
+      { num: full.pages_audited ?? '—', lbl: 'Pages Audited' },
+      { num: full.total_issues  ?? '—', lbl: 'Issues Found' },
+      { num: full.overall_grade || '—', lbl: 'Overall Grade', cls: 'grade' },
+    ];
+    if (cData.has_vdp)    stats.push({ num: '✓', lbl: 'VDP Captured',   cls: 'vdp' });
+    if (full.contact_form_screenshot) {
+      const cf = full.contact_form_screenshot;
+      stats.push({ num: cf.fields_count || '✓', lbl: 'Form Fields Filled', cls: 'vdp' });
+    }
+    statsRow.innerHTML = stats
+      .map(s => `<div class="stat ${s.cls||''}"><div class="num">${s.num}</div><div class="lbl">${s.lbl}</div></div>`)
+      .join('');
+  }
+
+  function showSummary(full) {
+    const summary = full.site_summary || '';
+    const recs    = full.recommendations || [];
+    if (!summary && !recs.length) return;
+
+    summarySec.style.display = 'block';
+    summaryText.textContent  = summary;
+    recsList.innerHTML = recs
+      .slice(0, 6)
+      .map(r => `<li>${r}</li>`)
+      .join('');
+  }
+
+  function renderShots(full) {
+    const all = [];
+    (full.desktop_results || []).forEach(r => {
+      if (r.screenshot_url)
+        all.push({ url: r.screenshot_url, label: r.title || r.url, badge: 'Desktop', cls: '' });
+    });
+    if (full.vdp_screenshot?.screenshot_url)
+      all.push({ url: full.vdp_screenshot.screenshot_url, label: 'VDP', badge: 'VDP', cls: 'vdp-t' });
+    if (full.contact_form_screenshot?.screenshot_url)
+      all.push({ url: full.contact_form_screenshot.screenshot_url, label: 'Contact Form', badge: 'Form', cls: 'form-t' });
+
+    // Feature screenshots — show the page where each Sprint 2 feature was detected
+    const FEATURE_BADGES = {
+      live_chat:          '💬 Live Chat',
+      contact_form:       '✉️ Contact Form',
+      finance_form:       '💳 Finance App',
+      trade_in_tool:      '🔄 Trade-In',
+      service_scheduling: '🔧 Service Appt',
+      parts_form:         '⚙️ Parts Form',
+    };
+    const df = full.dealership_features || {};
+    // Build URL → screenshot_url map from desktop results
+    const shotByUrl = {};
+    (full.desktop_results || []).forEach(r => {
+      if (r.screenshot_url && r.url) shotByUrl[r.url] = r.screenshot_url;
+    });
+    // De-duplicate: don't add the same screenshot twice
+    const addedShotUrls = new Set(all.map(s => s.url));
+    for (const [key, badge] of Object.entries(FEATURE_BADGES)) {
+      const f = df[key];
+      if (!f?.detected || !f.source_page) continue;
+      const shotUrl = shotByUrl[f.source_page];
+      if (!shotUrl || addedShotUrls.has(shotUrl)) continue;
+      addedShotUrls.add(shotUrl);
+      const providerNote = f.provider ? ` · ${f.provider}` : '';
+      all.push({ url: shotUrl, label: badge + providerNote, badge: badge + providerNote, cls: 'feat-t' });
+    }
+
+    const wrap = document.getElementById('screenshots-wrap');
+    if (!all.length) { wrap.style.display = 'none'; return; }
+    wrap.style.display = 'block';
+    shotsGrid.innerHTML = all.map(s => `
+      <div class="thumb ${s.cls}">
+        <img src="${API}${s.url}" alt="${escHtml(s.label)}" loading="lazy" onerror="this.style.display='none'"/>
+        <span class="badge">${escHtml(s.badge)}</span>
+      </div>`).join('');
+  }
+
+  /* ---------- Technical Findings ---------- */
+  function renderFindings(full) {
+    const bl  = full.broken_links_all   || [];
+    const bi  = full.broken_images_all  || [];
+    const oi  = full.oversized_images_all || [];
+    const je  = full.js_errors_all      || [];
+    const plt = full.page_load_times    || [];
+
+    if (!bl.length && !bi.length && !oi.length && !je.length && !plt.length) return;
+
+    document.getElementById('findings-section').style.display = 'block';
+
+    function fillCard(cardId, countId, listId, items, renderItem) {
+      const count = items.length;
+      const card  = document.getElementById(cardId);
+      const countEl = document.getElementById(countId);
+      const listEl  = document.getElementById(listId);
+      card.className  = `finding-card ${count > 0 ? 'has-issues' : 'no-issues'}`;
+      countEl.className = `count ${count === 0 ? 'zero' : ''}`;
+      countEl.textContent = count;
+      if (!count) {
+        listEl.innerHTML = '<li class="ok-msg">None detected ✓</li>';
+      } else {
+        listEl.innerHTML = items.slice(0, 12).map(renderItem).join('');
+      }
+    }
+
+    fillCard('fc-links', 'fc-links-count', 'fc-links-list', bl, l =>
+      `<li><span class="badge-status">${l.status_code || '?'}</span>${escHtml(l.url || '')} <small style="color:#555">(${escHtml(shortHost(l.source_page || ''))})</small></li>`
+    );
+
+    fillCard('fc-images', 'fc-images-count', 'fc-images-list', bi, i =>
+      `<li><span class="badge-status">${i.status_code || '?'}</span>${escHtml(i.src || '')} ${i.alt ? `<small style="color:#555">alt="${escHtml(i.alt)}"</small>` : ''}</li>`
+    );
+
+    fillCard('fc-oversized', 'fc-oversized-count', 'fc-oversized-list', oi, i =>
+      `<li><span class="badge-size">${i.file_size_kb || '?'} KB</span>${escHtml(i.src || '')}</li>`
+    );
+
+    fillCard('fc-jserrors', 'fc-jserrors-count', 'fc-jserrors-list', je, e =>
+      `<li><small style="color:#555">${escHtml(shortHost(e.source_page || ''))} ${e.viewport ? '[' + e.viewport + ']' : ''}</small> ${escHtml(e.message || '')}</li>`
+    );
+
+    // Page load times
+    const desktopTimes = plt.filter(t => t.viewport === 'desktop');
+    const mobileTimes  = plt.filter(t => t.viewport === 'mobile');
+    const avgD = desktopTimes.length ? Math.round(desktopTimes.reduce((s, t) => s + t.load_time_ms, 0) / desktopTimes.length) : null;
+    const avgM = mobileTimes.length  ? Math.round(mobileTimes.reduce( (s, t) => s + t.load_time_ms, 0) / mobileTimes.length)  : null;
+
+    const avgBadges = document.getElementById('fc-loadtimes-avgs');
+    if (avgD !== null) avgBadges.innerHTML += `<span class="avg-badge">Desktop avg: <b>${avgD} ms</b></span> `;
+    if (avgM !== null) avgBadges.innerHTML += `<span class="avg-badge">Mobile avg: <b>${avgM} ms</b></span>`;
+
+    const avgDisplay = avgD !== null ? `${avgD} ms avg` : '—';
+    document.getElementById('fc-loadtimes-avg').textContent = avgDisplay;
+
+    const ltBody = document.getElementById('fc-loadtimes-body');
+    ltBody.innerHTML = plt.slice(0, 16).map(t => {
+      const ms    = Math.round(t.load_time_ms || 0);
+      const slow  = (t.viewport === 'desktop' && ms > 3000) || (t.viewport === 'mobile' && ms > 4000);
+      const cls   = slow ? 'slow' : 'ok';
+      const label = t.title || t.url || '';
+      return `<tr><td>${escHtml(t.viewport || '')}</td><td class="${cls}">${ms}</td><td title="${escHtml(t.url || '')}">${escHtml(label.substring(0, 50))}</td></tr>`;
+    }).join('');
+  }
+
+  /* ---------- Dealership Features ---------- */
+  function renderFeatures(full) {
+    const df = full.dealership_features;
+    if (!df) return;
+
+    const FEATURE_META = [
+      { key: 'contact_form',       label: 'Contact / Inquiry Form', icon: '✉️' },
+      { key: 'finance_form',       label: 'Finance / Credit App',   icon: '💳' },
+      { key: 'trade_in_tool',      label: 'Trade-In Valuation',     icon: '🔄' },
+      { key: 'service_scheduling', label: 'Service Scheduling',     icon: '🔧' },
+      { key: 'parts_form',         label: 'Parts Order / Request',  icon: '⚙️' },
+      { key: 'live_chat',          label: 'Live Chat Widget',       icon: '💬' },
+    ];
+
+    const grid = document.getElementById('features-grid');
+    grid.innerHTML = FEATURE_META.map(m => {
+      const f = df[m.key] || {};
+      const found = !!f.detected;
+      const detail = found
+        ? (f.provider ? escHtml(f.provider) : escHtml((f.evidence || '').substring(0, 50)))
+        : 'Not detected';
+      return `
+        <div class="feature-pill ${found ? 'found' : 'missing'}">
+          <span class="ficon">${m.icon}</span>
+          <div class="finfo">
+            <div class="fname">${m.label}</div>
+            <div class="fdetail">${detail}</div>
+          </div>
+        </div>`;
+    }).join('');
+
+    document.getElementById('features-section').style.display = 'block';
+  }
+
+  function escHtml(str) {
+    return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+  function shortHost(url) {
+    try { return new URL(url).pathname.substring(0, 30) || '/'; } catch { return url.substring(0, 30); }
+  }
+
+  /* ---------- Downloads ---------- */
+  async function download(path, filename) {
+    const btn = path.includes('pptx') ? dlPptx : dlPdf;
+    btn.disabled = true;
+    const orig = btn.textContent;
+    btn.textContent = 'Generating…';
+    try {
+      const res = await fetch(`${API}${path}`);
+      if (!res.ok) throw new Error(await res.text());
+      const blob = await res.blob();
+      const a    = document.createElement('a');
+      a.href     = URL.createObjectURL(blob);
+      a.download = filename;
+      a.click();
+    } catch (e) {
+      alert('Download failed: ' + e.message);
+    } finally {
+      btn.disabled    = false;
+      btn.textContent = orig;
+    }
+  }
+
+  dlPptx.addEventListener('click', () =>
+    download(`/api/chat/sessions/${SESSION_ID}/pptx`, `websentinel_audit_${Date.now()}.pptx`));
+
+  dlPdf.addEventListener('click', () =>
+    download(`/api/chat/sessions/${SESSION_ID}/pdf`, `websentinel_audit_${Date.now()}.pdf`));
+</script>
+</body>
+</html>

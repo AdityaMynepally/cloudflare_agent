@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<style>
+  @page {
+    size: A3 landscape;
+    margin: 0.4cm;
+  }
+
+  * {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+  }
+
+  body {
+    font-family: Helvetica, Arial, sans-serif;
+    font-size: 9px;
+    color: #1a1a1a;
+    background: #fff;
+  }
+
+  .card {
+    width: 100%;
+    border: 2px solid #2c3e50;
+  }
+
+  /* ---- Header ---- */
+  .card-header {
+    background-color: #e67e22;
+    color: white;
+    padding: 12px 20px;
+    text-align: center;
+  }
+
+  .card-header h1 {
+    font-size: 20px;
+    font-weight: bold;
+    letter-spacing: 2px;
+    margin: 0;
+  }
+
+  /* ---- URL Bar ---- */
+  .url-bar {
+    background-color: #2c3e50;
+    color: #ecf0f1;
+    padding: 8px 20px;
+  }
+
+  .url-bar .label {
+    font-weight: bold;
+    font-size: 10px;
+  }
+
+  .url-bar .url {
+    font-size: 11px;
+    font-family: Courier, monospace;
+    margin-left: 8px;
+  }
+
+  /* ---- Legend ---- */
+  .legend {
+    background-color: #f8f9fa;
+    padding: 6px 20px;
+    border-bottom: 1px solid #dee2e6;
+    font-size: 9px;
+  }
+
+  .legend-item {
+    display: inline-block;
+    margin-right: 20px;
+  }
+
+  .circle {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    display: inline-block;
+    vertical-align: middle;
+    margin-right: 4px;
+  }
+
+  .circle-pass { background-color: #27ae60; }
+  .circle-fail { background-color: #e74c3c; }
+  .circle-na { background-color: #bdc3c7; }
+
+  /* ---- Sections Grid ---- */
+  .sections-grid {
+    padding: 8px;
+  }
+
+  .sections-row {
+    width: 100%;
+    margin-bottom: 8px;
+  }
+
+  .section {
+    width: 49%;
+    display: inline-block;
+    vertical-align: top;
+    border: 1px solid #dee2e6;
+    margin-right: 1%;
+  }
+
+  .section-header {
+    padding: 6px 10px;
+    color: white;
+    font-weight: bold;
+    font-size: 11px;
+    letter-spacing: 1px;
+  }
+
+  .section-header-orange { background-color: #e67e22; }
+  .section-header-blue { background-color: #2980b9; }
+  .section-header-green { background-color: #27ae60; }
+  .section-header-purple { background-color: #8e44ad; }
+
+  /* ---- Check Table ---- */
+  .check-table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+
+  .check-table th {
+    background-color: #f1f3f5;
+    padding: 3px 8px;
+    text-align: center;
+    font-size: 8px;
+    font-weight: bold;
+    border-bottom: 1px solid #dee2e6;
+  }
+
+  .check-table th.label-col {
+    text-align: left;
+    width: 60%;
+  }
+
+  .check-table td {
+    padding: 3px 8px;
+    border-bottom: 1px solid #f1f3f5;
+    font-size: 9px;
+    vertical-align: middle;
+  }
+
+  .check-table td.status-col {
+    text-align: center;
+    width: 20%;
+  }
+
+  .status-circle {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    display: inline-block;
+  }
+
+  .status-pass { background-color: #27ae60; }
+  .status-fail { background-color: #e74c3c; }
+  .status-na { background-color: #e0e0e0; }
+
+  /* ---- Issues Boxes ---- */
+  .issues-container {
+    padding: 6px 8px;
+  }
+
+  .issues-box {
+    border: 1px solid #dee2e6;
+    margin-bottom: 4px;
+  }
+
+  .issues-box-header {
+    background-color: #f1f3f5;
+    padding: 3px 8px;
+    font-size: 8px;
+    font-weight: bold;
+    color: #495057;
+  }
+
+  .issues-box-content {
+    padding: 4px 8px;
+    font-size: 8px;
+    color: #495057;
+    min-height: 18px;
+  }
+
+  /* ---- Footer ---- */
+  .card-footer {
+    background-color: #2c3e50;
+    color: #ecf0f1;
+    padding: 8px 20px;
+    font-size: 9px;
+  }
+
+  .footer-left {
+    display: inline-block;
+    width: 60%;
+  }
+
+  .footer-right {
+    display: inline-block;
+    width: 39%;
+    text-align: right;
+  }
+
+  .footer-label {
+    font-weight: bold;
+    font-size: 8px;
+    opacity: 0.8;
+  }
+
+  .footer-value {
+    font-size: 10px;
+    margin-left: 6px;
+  }
+</style>
+</head>
+<body>
+  <div class="card">
+    <!-- Header -->
+    <div class="card-header">
+      <h1>WEB SENTINEL AI - QA AUDIT</h1>
+    </div>
+
+    <!-- URL Bar -->
+    <div class="url-bar">
+      <span class="label">WEBSITE:</span>
+      <span class="url">{{ card.website_url }}</span>
+    </div>
+
+    <!-- Legend -->
+    <div class="legend">
+      <span class="legend-item">
+        <span class="circle circle-pass"></span>
+        Works as Expected
+      </span>
+      <span class="legend-item">
+        <span class="circle circle-fail"></span>
+        Issues Found
+      </span>
+      <span class="legend-item">
+        <span class="circle circle-na"></span>
+        Not Applicable
+      </span>
+    </div>
+
+    <!-- Sections Grid -->
+    <div class="sections-grid">
+      {% for section in card.sections %}
+      {% if loop.index is odd %}<div class="sections-row">{% endif %}
+      <div class="section">
+        <div class="section-header {% if loop.index == 1 %}section-header-orange{% elif loop.index == 2 %}section-header-blue{% elif loop.index == 3 %}section-header-green{% else %}section-header-purple{% endif %}">
+          {{ section.title | upper }}
+        </div>
+
+        <table class="check-table">
+          <thead>
+            <tr>
+              <th class="label-col">CHECK ITEM</th>
+              <th>DESKTOP</th>
+              <th>MOBILE</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for check in section.checks %}
+            <tr>
+              <td>{{ check.label }}</td>
+              <td class="status-col">
+                <span class="status-circle status-{{ check.desktop_status }}"></span>
+              </td>
+              <td class="status-col">
+                {% if check.has_mobile_column and check.mobile_status %}
+                <span class="status-circle status-{{ check.mobile_status }}"></span>
+                {% else %}
+                <span class="status-circle status-na"></span>
+                {% endif %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+
+        <div class="issues-container">
+          <div class="issues-box">
+            <div class="issues-box-header">STREAM: ISSUES &amp; REQUIRED UPDATES</div>
+            <div class="issues-box-content">{{ section.stream_issues or 'No issues found.' }}</div>
+          </div>
+          <div class="issues-box">
+            <div class="issues-box-header">SUPPORT: ISSUES &amp; REQUIRED UPDATES</div>
+            <div class="issues-box-content">{{ section.support_issues or 'No issues found.' }}</div>
+          </div>
+        </div>
+      </div>
+      {% if loop.index is even or loop.last %}</div>{% endif %}
+      {% endfor %}
+    </div>
+
+    <!-- Footer -->
+    <div class="card-footer">
+      <span class="footer-left">
+        <span class="footer-label">AUDIT PERFORMED BY:</span>
+        <span class="footer-value">{{ card.auditor_name }}</span>
+      </span>
+      <span class="footer-right">
+        <span class="footer-label">DATE:</span>
+        <span class="footer-value">{{ card.audit_date }}</span>
+      </span>
+    </div>
+  </div>
+</body>
+</html>

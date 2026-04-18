@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+
+# Virtual environment
+venv/
+env/
+.venv/
+
+# Environment / secrets
+.env
+.env.*
+*.env
+env.example.sh
+.env.example.sh
+
+# Claude Code
+.claude/
+
+# Sprint notes (internal)
+SPRINT_1_NOTES.md
+
+# Runtime artifacts
+results/
+sessions/
+screenshots/
+
+# macOS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
