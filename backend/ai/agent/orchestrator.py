@@ -343,6 +343,7 @@ class AuditOrchestrator:
                 "completed_at": session.completed_at,
                 "has_vdp": session.vdp_screenshot is not None,
                 "vdp_url": (session.vdp_screenshot or {}).get("url"),
+                "phone_numbers_count": len(session.phone_numbers_all),
                 "broken_links_count": len(session.broken_links_all),
                 "broken_images_count": len(session.broken_images_all),
                 "oversized_images_count": len(session.oversized_images_all),
@@ -682,6 +683,7 @@ class AuditOrchestrator:
         forms = capture.get("forms", [])
         buttons = capture.get("buttons", [])
         page_features = capture.get("page_features") or {}
+        phone_numbers = capture.get("phone_numbers") or []
         screenshot_b64 = capture.get("screenshot_base64")
 
         # Determine page type
@@ -758,6 +760,7 @@ class AuditOrchestrator:
             forms=forms,
             buttons=buttons,
             page_features=page_features,
+            phone_numbers=phone_numbers,
         )
 
         return result
@@ -824,6 +827,14 @@ class AuditOrchestrator:
             features = desktop_result.page_features or {}
             self._merge_dealership_features(session, features, page_url)
 
+            # Sprint 3: aggregate phone numbers (deduplicate by normalized 10-digit key)
+            known_phones = {self._normalize_phone(p["number"]) for p in session.phone_numbers_all}
+            for ph in desktop_result.phone_numbers:
+                norm = self._normalize_phone(ph.get("number", ""))
+                if norm and norm not in known_phones:
+                    known_phones.add(norm)
+                    session.phone_numbers_all.append({**ph, "source_page": page_url})
+
         if mobile_result and not mobile_result.error:
             # JS errors from mobile
             for err in mobile_result.js_errors:
@@ -837,6 +848,13 @@ class AuditOrchestrator:
                     "load_time_ms": mobile_result.load_time_ms,
                     "viewport": "mobile",
                 })
+
+    @staticmethod
+    def _normalize_phone(raw: str) -> str:
+        """Strip non-digits, return last 10 digits for deduplication."""
+        import re
+        digits = re.sub(r"\D", "", raw or "")
+        return digits[-10:] if len(digits) >= 10 else digits
 
     def _merge_dealership_features(
         self,

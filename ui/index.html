@@ -280,6 +280,54 @@
     .thumb.form-t  .badge { background: #9333ea; }
     .thumb.feat-t  { border-color: var(--green); }
     .thumb.feat-t  .badge { background: #166534; }
+    /* make thumbs clickable */
+    .thumb a { display: block; width: 100%; height: 100%; }
+    .thumb a:hover img { opacity: .85; }
+
+    /* ---- Phone Numbers (Sprint 3) ---- */
+    #phones-section {
+      display: none;
+      margin-top: 20px;
+    }
+    #phones-section .section-title {
+      font-size: 0.82rem;
+      font-weight: 600;
+      color: var(--gray);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 10px;
+    }
+    .phones-dept {
+      margin-bottom: 10px;
+    }
+    .phones-dept-label {
+      font-size: 0.72rem;
+      font-weight: 700;
+      color: var(--orange);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      margin-bottom: 5px;
+    }
+    .phones-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .phone-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: #111;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 4px 12px;
+      font-size: 0.78rem;
+      color: #ddd;
+      text-decoration: none;
+      transition: border-color .15s;
+    }
+    .phone-chip:hover { border-color: var(--orange); color: var(--white); }
+    .phone-chip .ph-icon { color: var(--green); font-size: 0.82rem; }
 
     /* ---- Technical Findings ---- */
     #findings-section { display: none; margin-top: 20px; }
@@ -563,6 +611,12 @@
       </div>
     </div>
 
+    <!-- Phone Numbers (Sprint 3) -->
+    <div id="phones-section">
+      <p class="section-title">Phone Numbers Found</p>
+      <div id="phones-body"></div>
+    </div>
+
     <!-- Dealership Features (Sprint 2) -->
     <div id="features-section">
       <p class="section-title">Dealership Features Detected</p>
@@ -658,6 +712,8 @@
     statsRow.innerHTML = '';
     shotsGrid.innerHTML = '';
     document.getElementById('findings-section').style.display = 'none';
+    document.getElementById('phones-section').style.display = 'none';
+    document.getElementById('phones-body').innerHTML = '';
     document.getElementById('features-section').style.display = 'none';
     document.getElementById('features-grid').innerHTML = '';
     setProgress(5);
@@ -731,6 +787,7 @@
       showSummary(full);
       renderShots(full);
       renderFindings(full);
+      renderPhones(full);
       renderFeatures(full);
       downloadRow.style.display = 'flex';
     } catch (e) {
@@ -770,14 +827,15 @@
 
   function renderShots(full) {
     const all = [];
+    // pageUrl = the live site page the screenshot was taken from (for clickable link)
     (full.desktop_results || []).forEach(r => {
       if (r.screenshot_url)
-        all.push({ url: r.screenshot_url, label: r.title || r.url, badge: 'Desktop', cls: '' });
+        all.push({ url: r.screenshot_url, label: r.title || r.url, badge: 'Desktop', cls: '', pageUrl: r.url });
     });
     if (full.vdp_screenshot?.screenshot_url)
-      all.push({ url: full.vdp_screenshot.screenshot_url, label: 'VDP', badge: 'VDP', cls: 'vdp-t' });
+      all.push({ url: full.vdp_screenshot.screenshot_url, label: 'VDP', badge: 'VDP', cls: 'vdp-t', pageUrl: full.vdp_screenshot.url });
     if (full.contact_form_screenshot?.screenshot_url)
-      all.push({ url: full.contact_form_screenshot.screenshot_url, label: 'Contact Form', badge: 'Form', cls: 'form-t' });
+      all.push({ url: full.contact_form_screenshot.screenshot_url, label: 'Contact Form', badge: 'Form', cls: 'form-t', pageUrl: full.contact_form_screenshot.url });
 
     // Feature screenshots — show the page where each Sprint 2 feature was detected
     const FEATURE_BADGES = {
@@ -789,12 +847,10 @@
       parts_form:         '⚙️ Parts Form',
     };
     const df = full.dealership_features || {};
-    // Build URL → screenshot_url map from desktop results
     const shotByUrl = {};
     (full.desktop_results || []).forEach(r => {
       if (r.screenshot_url && r.url) shotByUrl[r.url] = r.screenshot_url;
     });
-    // De-duplicate: don't add the same screenshot twice
     const addedShotUrls = new Set(all.map(s => s.url));
     for (const [key, badge] of Object.entries(FEATURE_BADGES)) {
       const f = df[key];
@@ -803,17 +859,59 @@
       if (!shotUrl || addedShotUrls.has(shotUrl)) continue;
       addedShotUrls.add(shotUrl);
       const providerNote = f.provider ? ` · ${f.provider}` : '';
-      all.push({ url: shotUrl, label: badge + providerNote, badge: badge + providerNote, cls: 'feat-t' });
+      all.push({ url: shotUrl, label: badge + providerNote, badge: badge + providerNote, cls: 'feat-t', pageUrl: f.source_page });
     }
 
     const wrap = document.getElementById('screenshots-wrap');
     if (!all.length) { wrap.style.display = 'none'; return; }
     wrap.style.display = 'block';
-    shotsGrid.innerHTML = all.map(s => `
-      <div class="thumb ${s.cls}">
+    shotsGrid.innerHTML = all.map(s => {
+      const inner = `
         <img src="${API}${s.url}" alt="${escHtml(s.label)}" loading="lazy" onerror="this.style.display='none'"/>
-        <span class="badge">${escHtml(s.badge)}</span>
-      </div>`).join('');
+        <span class="badge">${escHtml(s.badge)}</span>`;
+      // Wrap in anchor if we have a live page URL
+      return s.pageUrl
+        ? `<div class="thumb ${s.cls}"><a href="${escHtml(s.pageUrl)}" target="_blank" rel="noopener" title="${escHtml(s.label)}">${inner}</a></div>`
+        : `<div class="thumb ${s.cls}">${inner}</div>`;
+    }).join('');
+  }
+
+  /* ---------- Phone Numbers ---------- */
+  function renderPhones(full) {
+    const phones = full.phone_numbers_all || [];
+    if (!phones.length) return;
+
+    const DEPT_ORDER  = ['Main', 'Sales', 'Service', 'Parts', 'Finance'];
+    const DEPT_ICONS  = { Main: '☎️', Sales: '🚗', Service: '🔧', Parts: '⚙️', Finance: '💳' };
+
+    // Group by department
+    const grouped = {};
+    for (const ph of phones) {
+      const dept = ph.department || 'Main';
+      (grouped[dept] = grouped[dept] || []).push(ph);
+    }
+
+    // Render ordered departments first, then any extras
+    const depts = [...DEPT_ORDER.filter(d => grouped[d]), ...Object.keys(grouped).filter(d => !DEPT_ORDER.includes(d))];
+
+    const body = document.getElementById('phones-body');
+    body.innerHTML = depts.map(dept => {
+      const items = grouped[dept];
+      const icon  = DEPT_ICONS[dept] || '📞';
+      const chips = items.map(ph => {
+        // Make each number a clickable tel: link
+        const tel = 'tel:' + (ph.number || '').replace(/\s/g, '');
+        const label = escHtml(ph.display || ph.number || '');
+        return `<a class="phone-chip" href="${escHtml(tel)}"><span class="ph-icon">${icon}</span>${label}</a>`;
+      }).join('');
+      return `
+        <div class="phones-dept">
+          <div class="phones-dept-label">${escHtml(dept)}</div>
+          <div class="phones-list">${chips}</div>
+        </div>`;
+    }).join('');
+
+    document.getElementById('phones-section').style.display = 'block';
   }
 
   /* ---------- Technical Findings ---------- */

@@ -219,6 +219,82 @@
     }
   }
 
+  // ---- Sprint 3: Phone Number Collection ----
+
+  function getPhoneNumbers() {
+    const phones = [];
+    const seen = new Set(); // keyed on normalized 10-digit number
+
+    function normalize(raw) {
+      const digits = raw.replace(/\D/g, '');
+      return digits.length >= 10 ? digits.slice(-10) : digits;
+    }
+
+    // Determine department from surrounding context text
+    function getDepartment(contextText) {
+      const DEPT_MAP = [
+        { dept: 'Sales',   kw: ['sales', 'new car', 'used car', 'new vehicle', 'used vehicle', 'buy a car', 'shop vehicles'] },
+        { dept: 'Service', kw: ['service', 'repair', 'maintenance', 'body shop', 'collision', 'schedule service'] },
+        { dept: 'Parts',   kw: ['parts', 'accessories', 'parts dept', 'order parts'] },
+        { dept: 'Finance', kw: ['finance', 'financing', 'credit', 'loan', 'payment'] },
+      ];
+      const t = contextText.toLowerCase();
+      for (const { dept, kw } of DEPT_MAP) {
+        if (kw.some(k => t.includes(k))) return dept;
+      }
+      return 'Main';
+    }
+
+    // Walk up the DOM to gather department context
+    function getContext(el) {
+      if (!el) return '';
+      let ctx = ((el.textContent || '') + ' ' +
+                 (el.getAttribute('aria-label') || '') + ' ' +
+                 (el.getAttribute('title') || '')).substring(0, 200);
+      let node = el;
+      for (let i = 0; i < 5 && node.parentElement; i++) {
+        node = node.parentElement;
+        const heading = node.querySelector('h1,h2,h3,h4,h5,h6,label,[class*="title"],[class*="dept"],[class*="heading"]');
+        if (heading) ctx += ' ' + heading.textContent.substring(0, 100);
+      }
+      return ctx;
+    }
+
+    // 1. tel: links — most reliable (already formatted, clearly labeled)
+    for (const link of document.querySelectorAll('a[href^="tel:"]')) {
+      const raw = link.href.replace(/^tel:/, '').replace(/\s/g, '');
+      const norm = normalize(raw);
+      if (!norm || norm.length < 7 || seen.has(norm)) continue;
+      seen.add(norm);
+      const ctx   = getContext(link);
+      const dept  = getDepartment(ctx);
+      const display = (link.textContent.trim() || raw).substring(0, 30);
+      phones.push({ number: raw, display, department: dept });
+    }
+
+    // 2. Text-node regex scan for any numbers not already captured via tel: links
+    const PHONE_RE = /(?:\+1[\s.\-]?)?(?:\(?\d{3}\)?[\s.\-]\d{3}[\s.\-]\d{4})/g;
+    try {
+      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+      let tnode;
+      while ((tnode = walker.nextNode())) {
+        const text = tnode.textContent || '';
+        let m;
+        PHONE_RE.lastIndex = 0;
+        while ((m = PHONE_RE.exec(text)) !== null) {
+          const norm = normalize(m[0]);
+          if (!norm || norm.length < 10 || seen.has(norm)) continue;
+          seen.add(norm);
+          const ctx  = getContext(tnode.parentElement);
+          const dept = getDepartment(ctx);
+          phones.push({ number: m[0].trim(), display: m[0].trim(), department: dept });
+        }
+      }
+    } catch (_) {}
+
+    return phones.slice(0, 40);
+  }
+
   // ---- Sprint 2: Dealership Feature Detection ----
 
   function getPageFeatures() {
@@ -422,6 +498,7 @@
       axe_results: axeResults,
       js_errors: jsErrors,
       page_features: getPageFeatures(),
+      phone_numbers: getPhoneNumbers(),
       timestamp: new Date().toISOString()
     };
 
