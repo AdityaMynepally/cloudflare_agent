@@ -75,6 +75,7 @@ class ViewportResult:
     buttons: list = field(default_factory=list)
     page_features: Optional[dict] = None
     phone_numbers: list = field(default_factory=list)
+    business_info: Optional[dict] = None
     error: Optional[str] = None
 
     def to_dict(self) -> dict:
@@ -256,6 +257,11 @@ class AuditSession:
     oversized_images_all: list = field(default_factory=list)
     js_errors_all: list = field(default_factory=list)
     page_load_times: list = field(default_factory=list)
+    # Sprint 4 — Google Business Profile verification
+    business_info_website: Optional[dict] = None   # {name, address, hours} from site
+    gbp_data: Optional[dict] = None                # raw GBP Places API result
+    address_comparison: Optional[dict] = None      # {match, website, gbp, note}
+    hours_discrepancies: list = field(default_factory=list)  # [{day, website, gbp}]
     # Sprint 3 — phone numbers aggregated across all pages (deduplicated)
     # Each entry: {number, display, department, source_page}
     phone_numbers_all: list = field(default_factory=list)
@@ -314,6 +320,10 @@ class AuditSession:
             "inventory_screenshot": self.inventory_screenshot,
             "vdp_screenshot": self.vdp_screenshot,
             "contact_form_screenshot": self.contact_form_screenshot,
+            "business_info_website": self.business_info_website,
+            "gbp_data": self.gbp_data,
+            "address_comparison": self.address_comparison,
+            "hours_discrepancies": self.hours_discrepancies,
             "phone_numbers_all": self.phone_numbers_all,
             "broken_links_all": self.broken_links_all,
             "broken_images_all": self.broken_images_all,

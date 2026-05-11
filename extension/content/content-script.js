@@ -219,6 +219,102 @@
     }
   }
 
+  // ---- Sprint 4: Business Info (address + hours for GBP comparison) ----
+
+  function getBusinessInfo() {
+    const info = { name: null, address: null, hours: {}, raw_hours_text: [] };
+
+    const DAY_ABBR = { Mo:'Monday', Tu:'Tuesday', We:'Wednesday', Th:'Thursday', Fr:'Friday', Sa:'Saturday', Su:'Sunday' };
+    const DAY_FULL = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];
+
+    // 1. Schema.org JSON-LD — most reliable source
+    for (const script of document.querySelectorAll('script[type="application/ld+json"]')) {
+      try {
+        const items = [].concat(JSON.parse(script.textContent));
+        for (const item of items) {
+          if (!item || typeof item !== 'object') continue;
+          const type = String(item['@type'] || '').toLowerCase();
+          if (!type.includes('localbusiness') && !type.includes('autodealer') &&
+              !type.includes('dealer') && !type.includes('store')) continue;
+
+          if (item.name && !info.name)
+            info.name = String(item.name).trim();
+
+          if (item.address && !info.address) {
+            const a = item.address;
+            info.address = typeof a === 'string' ? a.trim()
+              : [a.streetAddress, a.addressLocality, a.addressRegion, a.postalCode]
+                  .filter(Boolean).join(', ');
+          }
+
+          // openingHoursSpecification → {Monday: "9:00 AM-5:00 PM", ...}
+          if (!Object.keys(info.hours).length && item.openingHoursSpecification) {
+            for (const spec of [].concat(item.openingHoursSpecification)) {
+              for (const raw of [].concat(spec.dayOfWeek || [])) {
+                const day = raw.replace(/https?:\/\/schema\.org\//i, '');
+                if (day) info.hours[day] = `${spec.opens || ''}-${spec.closes || ''}`;
+              }
+            }
+          }
+
+          // openingHours string "Mo-Fr 09:00-17:00"
+          if (!Object.keys(info.hours).length && item.openingHours) {
+            for (const oh of [].concat(item.openingHours)) {
+              const m = /^([A-Z][a-z](?:-[A-Z][a-z])?)\s+(\d{2}:\d{2})-(\d{2}:\d{2})/.exec(oh);
+              if (!m) continue;
+              const [, range, opens, closes] = m;
+              if (range.includes('-')) {
+                const [s, e] = range.split('-');
+                const keys = Object.keys(DAY_ABBR);
+                const si = keys.indexOf(s), ei = keys.indexOf(e);
+                for (let i = si; i <= ei && i >= 0; i++)
+                  info.hours[DAY_ABBR[keys[i]]] = `${opens}-${closes}`;
+              } else {
+                info.hours[DAY_ABBR[range] || range] = `${opens}-${closes}`;
+              }
+            }
+          }
+        }
+      } catch {}
+    }
+
+    // 2. Fallback address: <address> tag or itemprop
+    if (!info.address) {
+      const el = document.querySelector('address, [itemprop="address"], [class*="address"]:not([class*="form"]):not([class*="input"])');
+      if (el) info.address = el.textContent.trim().replace(/\s+/g, ' ').substring(0, 250);
+    }
+
+    // 3. Fallback name: og:site_name or page title
+    if (!info.name) {
+      const og = document.querySelector('meta[property="og:site_name"]');
+      info.name = og
+        ? og.getAttribute('content')
+        : (document.title || '').split(/[|\-–]/)[0].trim().substring(0, 80);
+    }
+
+    // 4. Fallback hours: DOM scan for day-name + time patterns
+    if (!Object.keys(info.hours).length) {
+      const HOURS_RE = /(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s*[-–to]+\s*(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)/i;
+      for (const el of document.querySelectorAll('td, li, div, p, span, dt, dd')) {
+        const text = (el.textContent || '').trim().replace(/\s+/g, ' ');
+        if (text.length > 100) continue; // skip large containers
+        const dayFound = DAY_FULL.find(d =>
+          new RegExp(`^${d}|${d}:`, 'i').test(text)
+        );
+        if (!dayFound || info.hours[dayFound]) continue;
+        const hm = HOURS_RE.exec(text);
+        if (hm) {
+          info.hours[dayFound] = `${hm[1].trim()}-${hm[2].trim()}`;
+          info.raw_hours_text.push(text.substring(0, 80));
+        } else if (/closed/i.test(text)) {
+          info.hours[dayFound] = 'Closed';
+        }
+      }
+    }
+
+    return info;
+  }
+
   // ---- Sprint 3: Phone Number Collection ----
 
   function getPhoneNumbers() {
@@ -499,6 +595,7 @@
       js_errors: jsErrors,
       page_features: getPageFeatures(),
       phone_numbers: getPhoneNumbers(),
+      business_info: getBusinessInfo(),
       timestamp: new Date().toISOString()
     };
 

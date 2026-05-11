@@ -35,6 +35,7 @@ from ai.analysis.seo import analyze_seo
 from ai.analysis.performance import analyze_performance
 from ai.analysis.links import check_links
 from ai.analysis.images import check_images
+from ai.analysis.gbp import fetch_gbp_data, compare_address, compare_hours
 from ai.analysis.summarizer import summarize_page, summarize_site, generate_recommendations
 from scoring.calculator import calculate_page_scores, calculate_site_score, score_to_grade
 
@@ -60,6 +61,9 @@ INVENTORY_URL_PATTERNS = [
     "/srp", "/vehicle-search", "/search-results",
     "/certified-pre-owned", "/cpo",
 ]
+
+
+GBP_API_KEY = "AIzaSyC3ewIZxolL1ZW1wsx8pmlI6mZYjkBu81I"
 
 
 class AuditOrchestrator:
@@ -285,6 +289,9 @@ class AuditOrchestrator:
             contact_url = categorized.get("contact")
             if contact_url:
                 await self._run_contact_form_phase(bridge, contact_url, session, emit)
+
+            # ---- Phase 2.6: GOOGLE BUSINESS PROFILE VERIFICATION ----
+            await self._run_gbp_phase(session, emit)
 
             # ---- Phase 3: SUMMARIZING ----
             session.status = AuditStatus.SUMMARIZING
@@ -663,6 +670,49 @@ class AuditOrchestrator:
         except Exception as e:
             logger.warning(f"Contact form phase error (non-fatal): {e}", exc_info=True)
 
+    async def _run_gbp_phase(self, session: AuditSession, emit) -> None:
+        """Query Google Business Profile and compare address + hours."""
+        try:
+            binfo = session.business_info_website or {}
+            dealer_name   = binfo.get("name", "")
+            website_addr  = binfo.get("address", "")
+            website_hours = binfo.get("hours", {})
+
+            if not dealer_name and not website_addr:
+                logger.info("[GBP] No dealer name/address found — skipping GBP phase")
+                return
+
+            await emit("progress", f"Checking Google Business Profile for: {dealer_name or website_addr}", {
+                "status": "gbp",
+            })
+
+            gbp = await fetch_gbp_data(dealer_name, website_addr, GBP_API_KEY)
+            if not gbp:
+                logger.warning("[GBP] No Google listing found")
+                await emit("progress", "No matching Google Business Profile found", {"status": "gbp"})
+                return
+
+            session.gbp_data = gbp
+            logger.info(f"[GBP] Found: {gbp.get('name')} — {gbp.get('formatted_address')}")
+
+            # Address comparison
+            session.address_comparison = compare_address(website_addr, gbp.get("formatted_address", ""))
+
+            # Hours comparison
+            if website_hours and gbp.get("hours"):
+                session.hours_discrepancies = compare_hours(website_hours, gbp["hours"])
+
+            disc_count = len(session.hours_discrepancies)
+            addr_ok    = session.address_comparison.get("match", None)
+            await emit("progress",
+                f"GBP: {'✓ Address match' if addr_ok else '⚠ Address mismatch'}, "
+                f"{disc_count} hours discrepanc{'ies' if disc_count != 1 else 'y'}",
+                {"status": "gbp", "address_match": addr_ok, "hours_discrepancies": disc_count},
+            )
+
+        except Exception as e:
+            logger.warning(f"GBP phase error (non-fatal): {e}", exc_info=True)
+
     async def _process_capture_for_viewport(
         self,
         url: str,
@@ -684,6 +734,7 @@ class AuditOrchestrator:
         buttons = capture.get("buttons", [])
         page_features = capture.get("page_features") or {}
         phone_numbers = capture.get("phone_numbers") or []
+        business_info = capture.get("business_info") or {}
         screenshot_b64 = capture.get("screenshot_base64")
 
         # Determine page type
@@ -761,6 +812,7 @@ class AuditOrchestrator:
             buttons=buttons,
             page_features=page_features,
             phone_numbers=phone_numbers,
+            business_info=business_info,
         )
 
         return result
@@ -826,6 +878,23 @@ class AuditOrchestrator:
             # Sprint 2: aggregate dealership feature detections (first page that detects wins)
             features = desktop_result.page_features or {}
             self._merge_dealership_features(session, features, page_url)
+
+            # Sprint 4: aggregate business_info (first page with useful data wins)
+            bi = desktop_result.page_features  # reusing page_features slot — business_info is separate
+            # business_info is stored directly on ViewportResult
+            if hasattr(desktop_result, 'business_info') and desktop_result.business_info:
+                binfo = desktop_result.business_info
+                if session.business_info_website is None:
+                    session.business_info_website = binfo
+                else:
+                    # Merge: fill in missing fields from subsequent pages
+                    existing = session.business_info_website
+                    if not existing.get("address") and binfo.get("address"):
+                        existing["address"] = binfo["address"]
+                    if not existing.get("hours") and binfo.get("hours"):
+                        existing["hours"] = binfo["hours"]
+                    if not existing.get("name") and binfo.get("name"):
+                        existing["name"] = binfo["name"]
 
             # Sprint 3: aggregate phone numbers (deduplicate by normalized 10-digit key)
             known_phones = {self._normalize_phone(p["number"]) for p in session.phone_numbers_all}

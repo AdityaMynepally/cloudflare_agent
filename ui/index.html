@@ -436,6 +436,82 @@
       margin-bottom: 6px;
     }
 
+    /* ---- Google Business Profile (Sprint 4) ---- */
+    #gbp-section {
+      display: none;
+      margin-top: 20px;
+    }
+    .gbp-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+    .gbp-header .section-title { margin-bottom: 0; }
+    .gbp-name {
+      font-size: 0.88rem;
+      font-weight: 600;
+      color: var(--white);
+      margin-bottom: 2px;
+    }
+    .gbp-addr {
+      font-size: 0.75rem;
+      color: #aaa;
+      margin-bottom: 10px;
+    }
+    .gbp-addr a { color: var(--blue); text-decoration: none; }
+    .gbp-addr a:hover { text-decoration: underline; }
+    .gbp-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+    .gbp-card {
+      background: #111;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 12px 14px;
+    }
+    .gbp-card.match   { border-left: 3px solid var(--green); }
+    .gbp-card.mismatch{ border-left: 3px solid var(--red); }
+    .gbp-card.neutral { border-left: 3px solid #555; }
+    .gbp-card-title {
+      font-size: 0.72rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .05em;
+      color: var(--gray);
+      margin-bottom: 6px;
+    }
+    .gbp-card-body {
+      font-size: 0.75rem;
+      color: #ccc;
+      line-height: 1.6;
+    }
+    .gbp-card-body .ok   { color: var(--green); font-weight: 600; }
+    .gbp-card-body .warn { color: var(--red);   font-weight: 600; }
+    .hours-table {
+      width: 100%;
+      font-size: 0.72rem;
+      border-collapse: collapse;
+      margin-top: 4px;
+    }
+    .hours-table th {
+      text-align: left;
+      color: var(--gray);
+      font-weight: 600;
+      padding: 2px 6px;
+      border-bottom: 1px solid #333;
+    }
+    .hours-table td {
+      padding: 2px 6px;
+      color: #bbb;
+      border-bottom: 1px solid #1a1a1a;
+    }
+    .hours-table tr:last-child td { border-bottom: none; }
+    .hours-table .disc-day { color: var(--red); font-weight: 600; }
+
     /* ---- Dealership Features (Sprint 2) ---- */
     #features-section {
       display: none;
@@ -611,6 +687,14 @@
       </div>
     </div>
 
+    <!-- Google Business Profile (Sprint 4) -->
+    <div id="gbp-section">
+      <div class="gbp-header">
+        <p class="section-title">Google Business Profile</p>
+      </div>
+      <div id="gbp-body"></div>
+    </div>
+
     <!-- Phone Numbers (Sprint 3) -->
     <div id="phones-section">
       <p class="section-title">Phone Numbers Found</p>
@@ -712,6 +796,8 @@
     statsRow.innerHTML = '';
     shotsGrid.innerHTML = '';
     document.getElementById('findings-section').style.display = 'none';
+    document.getElementById('gbp-section').style.display = 'none';
+    document.getElementById('gbp-body').innerHTML = '';
     document.getElementById('phones-section').style.display = 'none';
     document.getElementById('phones-body').innerHTML = '';
     document.getElementById('features-section').style.display = 'none';
@@ -787,6 +873,7 @@
       showSummary(full);
       renderShots(full);
       renderFindings(full);
+      renderGBP(full);
       renderPhones(full);
       renderFeatures(full);
       downloadRow.style.display = 'flex';
@@ -876,22 +963,111 @@
     }).join('');
   }
 
+  /* ---------- Google Business Profile ---------- */
+  function renderGBP(full) {
+    const gbp  = full.gbp_data;
+    const ac   = full.address_comparison;
+    const disc = full.hours_discrepancies || [];
+    const bw   = full.business_info_website || {};
+
+    if (!gbp && !ac) return;
+
+    const body = document.getElementById('gbp-body');
+    let html = '';
+
+    // Listing name + address
+    if (gbp) {
+      const mapsLink = gbp.maps_url
+        ? `<a href="${escHtml(gbp.maps_url)}" target="_blank" rel="noopener">View on Google Maps ↗</a>`
+        : '';
+      html += `
+        <div class="gbp-name">${escHtml(gbp.name || '')}</div>
+        <div class="gbp-addr">${escHtml(gbp.formatted_address || '')} ${mapsLink}</div>`;
+    }
+
+    html += `<div class="gbp-row">`;
+
+    // Address comparison card
+    if (ac) {
+      const cls  = ac.match === true ? 'match' : ac.match === false ? 'mismatch' : 'neutral';
+      const icon = ac.match === true ? '✓' : ac.match === false ? '⚠' : '—';
+      const statusCls = ac.match === true ? 'ok' : 'warn';
+      html += `
+        <div class="gbp-card ${cls}">
+          <div class="gbp-card-title">Address Comparison</div>
+          <div class="gbp-card-body">
+            <span class="${statusCls}">${icon} ${ac.match === true ? 'Addresses match' : ac.match === false ? 'Address mismatch' : 'Unable to compare'}</span><br>
+            <b>Website:</b> ${escHtml(ac.website || 'Not found')}<br>
+            <b>GBP:</b> ${escHtml(ac.gbp || 'Not found')}
+          </div>
+        </div>`;
+    }
+
+    // Hours comparison card
+    const hasHoursData = bw.hours && Object.keys(bw.hours).length;
+    const hasGbpHours  = gbp && gbp.hours && Object.keys(gbp.hours).length;
+    if (hasHoursData || hasGbpHours) {
+      const cls = disc.length === 0 ? 'match' : 'mismatch';
+      html += `
+        <div class="gbp-card ${cls}">
+          <div class="gbp-card-title">Hours Comparison ${disc.length ? `<span style="color:var(--red)">(${disc.length} discrepanc${disc.length===1?'y':'ies'})</span>` : ''}</div>
+          <div class="gbp-card-body">`;
+
+      if (!disc.length) {
+        html += `<span class="ok">✓ Hours match GBP</span>`;
+      } else {
+        html += `
+            <table class="hours-table">
+              <thead><tr><th>Day</th><th>Website</th><th>GBP</th></tr></thead>
+              <tbody>
+                ${disc.map(d => `
+                  <tr>
+                    <td class="disc-day">${escHtml(d.day)}</td>
+                    <td>${escHtml(d.website)}</td>
+                    <td>${escHtml(d.gbp)}</td>
+                  </tr>`).join('')}
+              </tbody>
+            </table>`;
+      }
+      html += `</div></div>`;
+    }
+
+    html += `</div>`; // close gbp-row
+
+    // GBP weekday text (reference)
+    if (gbp?.weekday_text?.length) {
+      html += `
+        <div style="font-size:0.7rem;color:#555;margin-top:4px;line-height:1.7">
+          <b style="color:#666">GBP Hours:</b> ${gbp.weekday_text.map(escHtml).join(' · ')}
+        </div>`;
+    }
+
+    body.innerHTML = html;
+    document.getElementById('gbp-section').style.display = 'block';
+  }
+
   /* ---------- Phone Numbers ---------- */
+  function fmtPhone(raw) {
+    // Normalize to XXX-XXX-XXXX (US format, no parens, no dots)
+    const digits = (raw || '').replace(/\D/g, '');
+    const d = digits.length > 10 ? digits.slice(-10) : digits;
+    if (d.length === 10) return `${d.slice(0,3)}-${d.slice(3,6)}-${d.slice(6)}`;
+    return raw; // fallback for non-standard lengths
+  }
+
   function renderPhones(full) {
     const phones = full.phone_numbers_all || [];
     if (!phones.length) return;
 
-    const DEPT_ORDER  = ['Main', 'Sales', 'Service', 'Parts', 'Finance'];
-    const DEPT_ICONS  = { Main: '☎️', Sales: '🚗', Service: '🔧', Parts: '⚙️', Finance: '💳' };
+    const DEPT_ORDER = ['Main', 'Sales', 'Service', 'Parts', 'Finance'];
+    const DEPT_ICONS = { Main: '☎️', Sales: '🚗', Service: '🔧', Parts: '⚙️', Finance: '💳' };
 
-    // Group by department
     const grouped = {};
     for (const ph of phones) {
       const dept = ph.department || 'Main';
       (grouped[dept] = grouped[dept] || []).push(ph);
     }
 
-    // Render ordered departments first, then any extras
     const depts = [...DEPT_ORDER.filter(d => grouped[d]), ...Object.keys(grouped).filter(d => !DEPT_ORDER.includes(d))];
 
     const body = document.getElementById('phones-body');
@@ -899,10 +1075,10 @@
       const items = grouped[dept];
       const icon  = DEPT_ICONS[dept] || '📞';
       const chips = items.map(ph => {
-        // Make each number a clickable tel: link
-        const tel = 'tel:' + (ph.number || '').replace(/\s/g, '');
-        const label = escHtml(ph.display || ph.number || '');
-        return `<a class="phone-chip" href="${escHtml(tel)}"><span class="ph-icon">${icon}</span>${label}</a>`;
+        const formatted = fmtPhone(ph.number || ph.display || '');
+        const digits    = (ph.number || '').replace(/\D/g, '');
+        const tel       = 'tel:+1' + digits.slice(-10);
+        return `<a class="phone-chip" href="${escHtml(tel)}"><span class="ph-icon">${icon}</span>${escHtml(formatted)}</a>`;
       }).join('');
       return `
         <div class="phones-dept">
@@ -1001,7 +1177,7 @@
       const detail = found
         ? (f.provider ? escHtml(f.provider) : escHtml((f.evidence || '').substring(0, 50)))
         : 'Not detected';
-      return `
+      const pill = `
         <div class="feature-pill ${found ? 'found' : 'missing'}">
           <span class="ficon">${m.icon}</span>
           <div class="finfo">
@@ -1009,6 +1185,10 @@
             <div class="fdetail">${detail}</div>
           </div>
         </div>`;
+      // Wrap in anchor linking to the source page if detected
+      return (found && f.source_page)
+        ? `<a href="${escHtml(f.source_page)}" target="_blank" rel="noopener" style="text-decoration:none;">${pill}</a>`
+        : pill;
     }).join('');
 
     document.getElementById('features-section').style.display = 'block';
