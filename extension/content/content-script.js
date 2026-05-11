@@ -473,7 +473,7 @@
           return TRADEIN_LINK_KEYWORDS.some(k => text.includes(k) || href.includes(k.replace(/\s/g, '-')));
         });
         if (tradeLink) {
-          features.trade_in_tool = { detected: true, provider: 'Custom', evidence: tradeLink.textContent.trim().substring(0, 80) };
+          features.trade_in_tool = { detected: true, provider: 'Custom', evidence: tradeLink.textContent.trim().substring(0, 80), feature_url: tradeLink.href };
         }
       }
 
@@ -502,7 +502,7 @@
                  href.includes('schedule') || href.includes('service-appt') || href.includes('service-appointment');
         });
         if (svcLink) {
-          features.service_scheduling = { detected: true, provider: 'Custom', evidence: svcLink.textContent.trim().substring(0, 80) };
+          features.service_scheduling = { detected: true, provider: 'Custom', evidence: svcLink.textContent.trim().substring(0, 80), feature_url: svcLink.href };
         }
       }
 
@@ -523,6 +523,7 @@
         features.finance_form = {
           detected: true,
           evidence: financeForm ? 'credit/finance form on page' : (financeLink?.textContent.trim().substring(0, 80) || 'link found'),
+          feature_url: financeForm ? window.location.href : (financeLink?.href || ''),
         };
       }
 
@@ -545,6 +546,7 @@
         features.contact_form = {
           detected: true,
           evidence: contactForm ? 'contact form on page' : (contactLink?.textContent.trim().substring(0, 80) || 'link found'),
+          feature_url: contactForm ? window.location.href : (contactLink?.href || ''),
         };
       }
 
@@ -564,6 +566,7 @@
         features.parts_form = {
           detected: true,
           evidence: partsForm ? 'parts form on page' : (partsLink?.textContent.trim().substring(0, 80) || 'link found'),
+          feature_url: partsForm ? window.location.href : (partsLink?.href || ''),
         };
       }
 

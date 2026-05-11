@@ -63,7 +63,14 @@ INVENTORY_URL_PATTERNS = [
 ]
 
 
-GBP_API_KEY = "AIzaSyC3ewIZxolL1ZW1wsx8pmlI6mZYjkBu81I"
+import os
+from pathlib import Path
+from dotenv import load_dotenv
+
+# Load from backend/.env (the canonical env for this server process)
+_ENV_FILE = Path(__file__).parent.parent.parent / ".env"   # backend/ai/agent -> backend/
+load_dotenv(_ENV_FILE, override=False)
+GBP_API_KEY = os.getenv("GOOGLE_PLACES_API_KEY", "")
 
 
 class AuditOrchestrator:
@@ -674,19 +681,22 @@ class AuditOrchestrator:
         """Query Google Business Profile and compare address + hours."""
         try:
             binfo = session.business_info_website or {}
-            dealer_name   = binfo.get("name", "")
-            website_addr  = binfo.get("address", "")
-            website_hours = binfo.get("hours", {})
+            # Use `or ""` so JS null values don't sneak through as None
+            dealer_name   = binfo.get("name") or ""
+            website_addr  = binfo.get("address") or ""
+            website_hours = binfo.get("hours") or {}
 
-            if not dealer_name and not website_addr:
-                logger.info("[GBP] No dealer name/address found — skipping GBP phase")
+            website_url = session.target_url or ""
+
+            if not dealer_name and not website_addr and not website_url:
+                logger.info("[GBP] No dealer name/address/URL found — skipping GBP phase")
                 return
 
-            await emit("progress", f"Checking Google Business Profile for: {dealer_name or website_addr}", {
+            await emit("progress", f"Checking Google Business Profile for: {dealer_name or website_url}", {
                 "status": "gbp",
             })
 
-            gbp = await fetch_gbp_data(dealer_name, website_addr, GBP_API_KEY)
+            gbp = await fetch_gbp_data(dealer_name, website_addr, GBP_API_KEY, website_url=website_url)
             if not gbp:
                 logger.warning("[GBP] No Google listing found")
                 await emit("progress", "No matching Google Business Profile found", {"status": "gbp"})
@@ -880,21 +890,22 @@ class AuditOrchestrator:
             self._merge_dealership_features(session, features, page_url)
 
             # Sprint 4: aggregate business_info (first page with useful data wins)
-            bi = desktop_result.page_features  # reusing page_features slot — business_info is separate
-            # business_info is stored directly on ViewportResult
-            if hasattr(desktop_result, 'business_info') and desktop_result.business_info:
-                binfo = desktop_result.business_info
+            # Guard: JS null → Python None, so use `or` to treat null as falsy
+            binfo = desktop_result.business_info or {}
+            bi_name = binfo.get("name") or ""
+            bi_addr = binfo.get("address") or ""
+            bi_hours = binfo.get("hours") or {}
+            if bi_name or bi_addr or bi_hours:
                 if session.business_info_website is None:
-                    session.business_info_website = binfo
+                    session.business_info_website = {"name": bi_name, "address": bi_addr, "hours": bi_hours}
                 else:
-                    # Merge: fill in missing fields from subsequent pages
                     existing = session.business_info_website
-                    if not existing.get("address") and binfo.get("address"):
-                        existing["address"] = binfo["address"]
-                    if not existing.get("hours") and binfo.get("hours"):
-                        existing["hours"] = binfo["hours"]
-                    if not existing.get("name") and binfo.get("name"):
-                        existing["name"] = binfo["name"]
+                    if not existing.get("name") and bi_name:
+                        existing["name"] = bi_name
+                    if not existing.get("address") and bi_addr:
+                        existing["address"] = bi_addr
+                    if not existing.get("hours") and bi_hours:
+                        existing["hours"] = bi_hours
 
             # Sprint 3: aggregate phone numbers (deduplicate by normalized 10-digit key)
             known_phones = {self._normalize_phone(p["number"]) for p in session.phone_numbers_all}

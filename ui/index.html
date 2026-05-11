@@ -539,8 +539,9 @@
       border-radius: var(--radius);
       padding: 10px 12px;
     }
-    .feature-pill.found  { border-left: 3px solid var(--green); }
+    .feature-pill.found  { border-left: 3px solid var(--green); cursor: pointer; }
     .feature-pill.missing{ border-left: 3px solid #444; opacity: 0.6; }
+    a:hover .feature-pill.found { background: #1a1a1a; border-color: var(--green); box-shadow: 0 0 0 1px var(--green); }
     .feature-pill .ficon {
       font-size: 1.1rem;
       flex-shrink: 0;
@@ -1003,44 +1004,44 @@
         </div>`;
     }
 
-    // Hours comparison card
-    const hasHoursData = bw.hours && Object.keys(bw.hours).length;
-    const hasGbpHours  = gbp && gbp.hours && Object.keys(gbp.hours).length;
-    if (hasHoursData || hasGbpHours) {
-      const cls = disc.length === 0 ? 'match' : 'mismatch';
-      html += `
-        <div class="gbp-card ${cls}">
-          <div class="gbp-card-title">Hours Comparison ${disc.length ? `<span style="color:var(--red)">(${disc.length} discrepanc${disc.length===1?'y':'ies'})</span>` : ''}</div>
-          <div class="gbp-card-body">`;
+    // Hours section
+    const DAYS = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];
+    const hasWebHours = bw.hours && Object.keys(bw.hours).length;
+    const hasGbpHours = gbp && gbp.hours && Object.keys(gbp.hours).length;
+    const discDays    = new Set((disc || []).map(d => d.day));
 
-      if (!disc.length) {
-        html += `<span class="ok">✓ Hours match GBP</span>`;
-      } else {
-        html += `
+    if (hasWebHours || hasGbpHours) {
+      const cls = disc.length === 0 ? 'match' : 'mismatch';
+      const title = (hasWebHours && hasGbpHours)
+        ? `Hours Comparison ${disc.length ? `<span style="color:var(--red)">(${disc.length} discrepanc${disc.length===1?'y':'ies'})</span>` : '<span style="color:var(--green)">✓ Match</span>'}`
+        : (hasGbpHours ? 'GBP Business Hours' : 'Website Hours');
+      html += `
+        <div class="gbp-card ${cls}" style="grid-column:1/-1">
+          <div class="gbp-card-title">${title}</div>
+          <div class="gbp-card-body">
             <table class="hours-table">
-              <thead><tr><th>Day</th><th>Website</th><th>GBP</th></tr></thead>
+              <thead><tr><th>Day</th>${hasWebHours ? '<th>Website</th>' : ''}${hasGbpHours ? '<th>GBP</th>' : ''}</tr></thead>
               <tbody>
-                ${disc.map(d => `
-                  <tr>
-                    <td class="disc-day">${escHtml(d.day)}</td>
-                    <td>${escHtml(d.website)}</td>
-                    <td>${escHtml(d.gbp)}</td>
-                  </tr>`).join('')}
+                ${DAYS.map(day => {
+                  const wh = (bw.hours || {})[day] || '';
+                  const gh = (gbp?.hours || {})[day] || '';
+                  if (!wh && !gh) return '';
+                  const isDisc = discDays.has(day);
+                  const rowCls = isDisc ? ' style="background:rgba(231,76,60,0.08)"' : '';
+                  const dayCls = isDisc ? ' class="disc-day"' : '';
+                  return `<tr${rowCls}>
+                    <td${dayCls}>${day}</td>
+                    ${hasWebHours ? `<td>${escHtml(wh || '—')}</td>` : ''}
+                    ${hasGbpHours ? `<td>${escHtml(gh || '—')}</td>` : ''}
+                  </tr>`;
+                }).join('')}
               </tbody>
-            </table>`;
-      }
-      html += `</div></div>`;
+            </table>
+          </div>
+        </div>`;
     }
 
     html += `</div>`; // close gbp-row
-
-    // GBP weekday text (reference)
-    if (gbp?.weekday_text?.length) {
-      html += `
-        <div style="font-size:0.7rem;color:#555;margin-top:4px;line-height:1.7">
-          <b style="color:#666">GBP Hours:</b> ${gbp.weekday_text.map(escHtml).join(' · ')}
-        </div>`;
-    }
 
     body.innerHTML = html;
     document.getElementById('gbp-section').style.display = 'block';
@@ -1186,8 +1187,9 @@
           </div>
         </div>`;
       // Wrap in anchor linking to the source page if detected
-      return (found && f.source_page)
-        ? `<a href="${escHtml(f.source_page)}" target="_blank" rel="noopener" style="text-decoration:none;">${pill}</a>`
+      const linkTarget = found && (f.feature_url || f.source_page);
+      return linkTarget
+        ? `<a href="${escHtml(linkTarget)}" target="_blank" rel="noopener" style="text-decoration:none;display:block;cursor:pointer;">${pill}</a>`
         : pill;
     }).join('');
 
