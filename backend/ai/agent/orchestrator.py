@@ -70,7 +70,7 @@ from dotenv import load_dotenv
 # Load from backend/.env (the canonical env for this server process)
 _ENV_FILE = Path(__file__).parent.parent.parent / ".env"   # backend/ai/agent -> backend/
 load_dotenv(_ENV_FILE, override=False)
-GBP_API_KEY = os.getenv("GOOGLE_PLACES_API_KEY", "")
+GBP_API_KEY = os.getenv("SERPAPI_KEY", "")
 
 
 class AuditOrchestrator:

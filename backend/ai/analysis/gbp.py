@@ -1,4 +1,4 @@
-"""Google Business Profile verification via Places API.
+"""Google Business Profile verification via SerpAPI (Google Maps engine).
 
 Fetches GBP data for a dealership by name + address hint, then compares
 the dealer's website address and business hours against the GBP listing.
@@ -7,21 +7,19 @@ the dealer's website address and business hours against the GBP listing.
 import logging
 import re
 from typing import Optional
+from urllib.parse import urlparse
 
 import httpx
 
 logger = logging.getLogger(__name__)
 
-_FIND_URL    = "https://maps.googleapis.com/maps/api/place/findplacefromtext/json"
-_DETAILS_URL = "https://maps.googleapis.com/maps/api/place/details/json"
-_TEXT_URL    = "https://maps.googleapis.com/maps/api/place/textsearch/json"
+_SERPAPI_URL = "https://serpapi.com/search"
 
 DAYS_ORDER = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-_DOW_INDEX = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
 
 
 # --------------------------------------------------------------------------- #
-#  Places API                                                                  #
+#  SerpAPI                                                                     #
 # --------------------------------------------------------------------------- #
 
 async def fetch_gbp_data(
@@ -30,7 +28,7 @@ async def fetch_gbp_data(
     api_key: str,
     website_url: str = "",
 ) -> Optional[dict]:
-    """Query Google Places to find the best-matching dealer listing.
+    """Query SerpAPI Google Maps to find the best-matching dealer listing.
 
     Returns a dict with keys: place_id, name, formatted_address, phone, hours,
     weekday_text, maps_url — or None if no match found.
@@ -38,94 +36,82 @@ async def fetch_gbp_data(
     if not dealer_name and not address_hint and not website_url:
         return None
 
-    # Extract domain from website URL to use as additional hint
+    # Extract domain hint from website URL
     domain_hint = ""
     if website_url:
         try:
-            from urllib.parse import urlparse
-            parsed = urlparse(website_url)
-            # e.g. "driveenvy.com" (strip www.)
-            domain_hint = parsed.netloc.lstrip("www.")
+            domain_hint = urlparse(website_url).netloc.lstrip("www.")
         except Exception:
             pass
 
-    # Build a prioritized list of queries to try
-    full_query    = f"{dealer_name} {address_hint}".strip()
-    name_only     = dealer_name.strip()
-    domain_query  = f"{dealer_name} {domain_hint}".strip() if domain_hint else ""
+    full_query   = f"{dealer_name} {address_hint}".strip()
+    name_only    = dealer_name.strip()
+    domain_query = f"{dealer_name} {domain_hint}".strip() if domain_hint else ""
 
-    async with httpx.AsyncClient(timeout=12.0) as client:
+    async with httpx.AsyncClient(timeout=15.0) as client:
 
-        async def _search(query: str, use_type: bool = False) -> list:
-            params: dict = {"query": query, "key": api_key}
-            if use_type:
-                params["type"] = "car_dealer"
-            resp = await client.get(_TEXT_URL, params=params)
-            return resp.json().get("results", [])
+        async def _search(query: str) -> Optional[dict]:
+            """Run one SerpAPI Google Maps search; return first usable result or None."""
+            resp = await client.get(_SERPAPI_URL, params={
+                "engine":   "google_maps",
+                "q":        query,
+                "api_key":  api_key,
+            })
+            data = resp.json()
 
-        place_id = None
+            # SerpAPI returns either place_results (direct single match)
+            # or local_results (list of matches)
+            place = data.get("place_results")
+            if place and place.get("title"):
+                logger.info(f"[GBP] Direct place_results match for {query!r}: {place.get('title')}")
+                return place
 
-        for query, use_type in [
-            (full_query,   True),   # name+address with car_dealer type
-            (full_query,   False),  # name+address without type
-            (domain_query, False),  # name+domain without type
-            (name_only,    True),   # name alone with car_dealer type
-            (name_only,    False),  # name alone without type
-        ]:
-            if not query:
-                continue
-            logger.info(f"[GBP] Trying query: {query!r} (type={'car_dealer' if use_type else 'any'})")
-            results = await _search(query, use_type)
-            if results:
-                place_id = results[0].get("place_id")
-                if place_id:
-                    logger.info(f"[GBP] Found place_id with query: {query!r}")
-                    break
+            local = data.get("local_results", [])
+            if local:
+                logger.info(f"[GBP] local_results[0] for {query!r}: {local[0].get('title')}")
+                return local[0]
 
-        if not place_id:
-            logger.warning(f"[GBP] No Places results for any query variant of {dealer_name!r}")
             return None
 
-        # Step 2: Place Details
-        det_resp = await client.get(_DETAILS_URL, params={
-            "place_id": place_id,
-            "fields": "name,formatted_address,opening_hours,formatted_phone_number,url",
-            "key": api_key,
-        })
-        result = det_resp.json().get("result", {})
+        result = None
+        for query in [full_query, domain_query, name_only]:
+            if not query:
+                continue
+            logger.info(f"[GBP] Trying SerpAPI query: {query!r}")
+            result = await _search(query)
+            if result:
+                break
 
-    # Parse periods → {Monday: "9:00 AM-5:00 PM", ...}
+    if not result:
+        logger.warning(f"[GBP] No SerpAPI results for any query variant of {dealer_name!r}")
+        return None
+
+    # Parse hours: SerpAPI returns [{"monday": "9 AM–7:30 PM"}, ...]
     hours_dict: dict[str, str] = {}
-    oh = result.get("opening_hours", {})
-    for period in oh.get("periods", []):
-        open_info  = period.get("open",  {})
-        close_info = period.get("close", {})
-        day_idx    = open_info.get("day")
-        if day_idx is None:
-            continue
-        day_name   = _DOW_INDEX[day_idx]
-        open_t     = _fmt_hhmm(open_info.get("time", ""))
-        close_t    = _fmt_hhmm(close_info.get("time", "")) if close_info else "Closed"
-        hours_dict[day_name] = f"{open_t}-{close_t}"
+    raw_hours = result.get("hours", [])
+    weekday_text: list[str] = []
+    for entry in (raw_hours if isinstance(raw_hours, list) else []):
+        for day_lower, time_str in entry.items():
+            day_cap = day_lower.capitalize()
+            hours_dict[day_cap] = time_str
+            weekday_text.append(f"{day_cap}: {time_str}")
+
+    maps_url = (
+        result.get("link") or
+        result.get("place_id_search") or
+        (f"https://www.google.com/maps/place/?q=place_id:{result.get('place_id')}"
+         if result.get("place_id") else "")
+    )
 
     return {
-        "place_id": place_id,
-        "name": result.get("name"),
-        "formatted_address": result.get("formatted_address"),
-        "phone": result.get("formatted_phone_number"),
-        "hours": hours_dict,
-        "weekday_text": oh.get("weekday_text", []),
-        "maps_url": result.get("url"),
+        "place_id":          result.get("place_id", ""),
+        "name":              result.get("title") or result.get("name", ""),
+        "formatted_address": result.get("address", ""),
+        "phone":             result.get("phone", ""),
+        "hours":             hours_dict,
+        "weekday_text":      weekday_text,
+        "maps_url":          maps_url,
     }
-
-
-def _fmt_hhmm(hhmm: str) -> str:
-    """Convert '0900' → '9:00 AM', '1730' → '5:30 PM'."""
-    if not hhmm or len(hhmm) != 4:
-        return hhmm
-    h, m = int(hhmm[:2]), int(hhmm[2:])
-    period = "AM" if h < 12 else "PM"
-    return f"{h % 12 or 12}:{m:02d} {period}"
 
 
 # --------------------------------------------------------------------------- #
@@ -171,15 +157,15 @@ def compare_address(website_addr: str, gbp_addr: str) -> dict:
     if not exact:
         wa_tok, ga_tok = set(wa.split()), set(ga.split())
         overlap = len(wa_tok & ga_tok) / max(len(wa_tok | ga_tok), 1)
-        match = overlap >= 0.70   # 70% token overlap accounts for minor formatting diffs
+        match = overlap >= 0.70
     else:
         match = True
 
     return {
         "match": match,
         "website": website_addr,
-        "gbp": gbp_addr,
-        "note": "" if match else "Address differs between website and Google Business Profile",
+        "gbp":     gbp_addr,
+        "note":    "" if match else "Address differs between website and Google Business Profile",
     }
 
 
@@ -200,7 +186,7 @@ def compare_hours(website_hours: dict, gbp_hours: dict) -> list[dict]:
 
         if _norm_hours(wh) != _norm_hours(gh):
             discrepancies.append({
-                "day": day,
+                "day":     day,
                 "website": wh or "Not listed",
                 "gbp":     gh or "Not listed",
             })
@@ -211,12 +197,11 @@ def compare_hours(website_hours: dict, gbp_hours: dict) -> list[dict]:
 def _time_to_minutes(t: str) -> Optional[int]:
     """Convert a time string to minutes since midnight.
 
-    Handles both 12-hour ('9:00 AM', '7:30 PM') and
-    24-hour ('09:00', '20:00') formats.
-    Returns None if unparseable.
+    Handles 12-hour with/without colon ('9:00 AM', '9 AM', '7:30 PM')
+    and 24-hour ('09:00', '20:00') formats.
     """
     t = t.strip().upper()
-    # 12-hour with AM/PM: "9:00 AM", "7:30PM"
+    # 12-hour with colon: "9:00 AM", "7:30 PM"
     m = re.match(r"(\d{1,2}):(\d{2})\s*(AM|PM)$", t)
     if m:
         h, mn, period = int(m.group(1)), int(m.group(2)), m.group(3)
@@ -225,6 +210,15 @@ def _time_to_minutes(t: str) -> Optional[int]:
         elif period == "AM" and h == 12:
             h = 0
         return h * 60 + mn
+    # 12-hour without colon: "9 AM", "12 PM"
+    m = re.match(r"(\d{1,2})\s*(AM|PM)$", t)
+    if m:
+        h, period = int(m.group(1)), m.group(2)
+        if period == "PM" and h != 12:
+            h += 12
+        elif period == "AM" and h == 12:
+            h = 0
+        return h * 60
     # 24-hour: "09:00", "20:00"
     m = re.match(r"(\d{1,2}):(\d{2})$", t)
     if m:
@@ -235,12 +229,10 @@ def _time_to_minutes(t: str) -> Optional[int]:
 def _norm_hours(s: str) -> str:
     """Normalize a day's hours range to 'open_mins-close_mins' for comparison.
 
-    Converts both 12-hour ('9:00 AM-7:30 PM') and 24-hour ('09:00-20:00')
-    formats to a canonical minutes-based string so they compare equal.
-    Falls back to lowercased raw string if parsing fails.
+    Handles 12-hour (with/without colon), 24-hour, and en/em-dash separators.
+    Falls back to lowercased raw string if parsing fails (e.g. 'Closed').
     """
     s = (s or "").strip()
-    # Split on dash variants (en-dash, em-dash, plain hyphen)
     parts = re.split(r"\s*[-–—]\s*", s, maxsplit=1)
     if len(parts) == 2:
         open_m  = _time_to_minutes(parts[0])
