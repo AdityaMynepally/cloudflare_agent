@@ -326,6 +326,15 @@
       return digits.length >= 10 ? digits.slice(-10) : digits;
     }
 
+    // Reject placeholder/fake numbers: all same digit (9999999999, 0000000000, etc.)
+    // or known dummy values like 1234567890
+    function isValidPhone(norm) {
+      if (!norm || norm.length < 10) return false;
+      if (/^(\d)\1{9}$/.test(norm)) return false;  // all same digit
+      if (norm === '1234567890') return false;
+      return true;
+    }
+
     // Determine department from surrounding context text
     function getDepartment(contextText) {
       const DEPT_MAP = [
@@ -360,7 +369,7 @@
     for (const link of document.querySelectorAll('a[href^="tel:"]')) {
       const raw = link.href.replace(/^tel:/, '').replace(/\s/g, '');
       const norm = normalize(raw);
-      if (!norm || norm.length < 7 || seen.has(norm)) continue;
+      if (!isValidPhone(norm) || seen.has(norm)) continue;
       seen.add(norm);
       const ctx   = getContext(link);
       const dept  = getDepartment(ctx);
@@ -379,7 +388,7 @@
         PHONE_RE.lastIndex = 0;
         while ((m = PHONE_RE.exec(text)) !== null) {
           const norm = normalize(m[0]);
-          if (!norm || norm.length < 10 || seen.has(norm)) continue;
+          if (!isValidPhone(norm) || seen.has(norm)) continue;
           seen.add(norm);
           const ctx  = getContext(tnode.parentElement);
           const dept = getDepartment(ctx);
@@ -466,11 +475,19 @@
         }
       }
       if (!features.trade_in_tool.detected) {
-        const TRADEIN_LINK_KEYWORDS = ['trade-in', 'trade in', 'value my trade', 'get trade value', 'instant cash offer', 'sell my car', 'trade your'];
+        const TRADEIN_LINK_KEYWORDS = [
+          'trade-in', 'trade in', 'value my trade', 'value your trade', 'value your vehicle',
+          'get trade value', 'instant cash offer', 'sell my car', 'sell your car', 'trade your',
+        ];
+        const TRADEIN_HREF_KEYWORDS = [
+          'trade-in', 'value-your-trade', 'value-my-trade', 'value-your-vehicle',
+          'instant-cash-offer', 'sell-my-car', 'trade-value',
+        ];
         const tradeLink = allLinks.find(a => {
           const text = a.textContent.toLowerCase();
           const href = (a.href || '').toLowerCase();
-          return TRADEIN_LINK_KEYWORDS.some(k => text.includes(k) || href.includes(k.replace(/\s/g, '-')));
+          return TRADEIN_LINK_KEYWORDS.some(k => text.includes(k)) ||
+                 TRADEIN_HREF_KEYWORDS.some(k => href.includes(k));
         });
         if (tradeLink) {
           features.trade_in_tool = { detected: true, provider: 'Custom', evidence: tradeLink.textContent.trim().substring(0, 80), feature_url: tradeLink.href };
@@ -494,12 +511,19 @@
         }
       }
       if (!features.service_scheduling.detected) {
-        const SVC_LINK_KEYWORDS = ['schedule service', 'book service', 'service appointment', 'schedule an appointment', 'book appointment'];
+        const SVC_LINK_KEYWORDS = [
+          'schedule service', 'book service', 'service appointment',
+          'schedule an appointment', 'book appointment', 'schedule my service',
+        ];
+        const SVC_HREF_KEYWORDS = [
+          'schedule-service', 'book-service', 'service-appointment',
+          'service-appt', 'schedule-appointment',
+        ];
         const svcLink = allLinks.find(a => {
           const text = a.textContent.toLowerCase();
           const href = (a.href || '').toLowerCase();
           return SVC_LINK_KEYWORDS.some(k => text.includes(k)) ||
-                 href.includes('schedule') || href.includes('service-appt') || href.includes('service-appointment');
+                 SVC_HREF_KEYWORDS.some(k => href.includes(k));
         });
         if (svcLink) {
           features.service_scheduling = { detected: true, provider: 'Custom', evidence: svcLink.textContent.trim().substring(0, 80), feature_url: svcLink.href };
@@ -507,12 +531,20 @@
       }
 
       // ---- 4. Finance / Credit Application Form Detection ----
-      const FINANCE_LINK_KEYWORDS = ['finance application', 'credit application', 'apply for financing', 'apply for credit', 'financing options', 'get pre-approved', 'pre-approval'];
+      // Specifically targets "apply for financing" pages — not generic finance info pages
+      const FINANCE_LINK_KEYWORDS = [
+        'apply for financing', 'apply for credit', 'finance application', 'credit application',
+        'financing application', 'get pre-approved', 'pre-approval', 'apply now',
+      ];
+      const FINANCE_HREF_KEYWORDS = [
+        'apply-for-financing', 'apply-for-credit', 'finance-application', 'finance-app',
+        'credit-application', 'credit-app', 'apply-now', 'get-pre-approved', 'pre-approval',
+      ];
       const financeLink = allLinks.find(a => {
         const text = a.textContent.toLowerCase();
         const href = (a.href || '').toLowerCase();
         return FINANCE_LINK_KEYWORDS.some(k => text.includes(k)) ||
-               href.includes('finance') || href.includes('credit-app') || href.includes('apply');
+               FINANCE_HREF_KEYWORDS.some(k => href.includes(k));
       });
       // Check if current page has a finance/credit form
       const financeForm = allForms.find(f => {
@@ -551,12 +583,18 @@
       }
 
       // ---- 6. Parts Ordering / Request Form Detection ----
-      const PARTS_LINK_KEYWORDS = ['order parts', 'parts request', 'parts department', 'parts & accessories', 'parts inquiry'];
+      const PARTS_LINK_KEYWORDS = [
+        'order parts', 'parts request', 'parts department', 'parts & accessories', 'parts inquiry',
+        'order your parts', 'request parts',
+      ];
+      const PARTS_HREF_KEYWORDS = [
+        'order-parts', 'parts-request', 'parts-order', 'parts-inquiry', 'parts-department',
+      ];
       const partsLink = allLinks.find(a => {
         const text = a.textContent.toLowerCase();
         const href = (a.href || '').toLowerCase();
         return PARTS_LINK_KEYWORDS.some(k => text.includes(k)) ||
-               href.includes('/parts') || href.includes('parts-request') || href.includes('order-parts');
+               PARTS_HREF_KEYWORDS.some(k => href.includes(k));
       });
       const partsForm = allForms.find(f => {
         const txt = f.innerText.toLowerCase();
