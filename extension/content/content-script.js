@@ -295,18 +295,90 @@
     // 4. Fallback hours: DOM scan for day-name + time patterns
     if (!Object.keys(info.hours).length) {
       const HOURS_RE = /(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s*[-–to]+\s*(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)/i;
-      for (const el of document.querySelectorAll('td, li, div, p, span, dt, dd')) {
+
+      // Map abbreviated names (Mon/Tue/…) and full names to canonical full names
+      const DAY_ABBR_MAP = {
+        mon:'Monday', tue:'Tuesday', wed:'Wednesday', thu:'Thursday',
+        fri:'Friday', sat:'Saturday', sun:'Sunday',
+      };
+      const ALL_DAYS = [...DAY_FULL, ...Object.keys(DAY_ABBR_MAP)];
+
+      // Expand a day-range like "Mon – Fri" or "Monday - Friday" into individual days
+      function expandDayRange(startDay, endDay) {
+        const expanded = [];
+        const si = DAY_FULL.indexOf(startDay), ei = DAY_FULL.indexOf(endDay);
+        if (si !== -1 && ei !== -1 && si <= ei) {
+          for (let i = si; i <= ei; i++) expanded.push(DAY_FULL[i]);
+        }
+        return expanded.length ? expanded : [startDay];
+      }
+
+      function resolveDay(raw) {
+        const lower = raw.toLowerCase();
+        return DAY_ABBR_MAP[lower] ||
+               DAY_FULL.find(d => d.toLowerCase() === lower) ||
+               null;
+      }
+
+      // Helper: find time in element text; if not found, check parent (handles separate td cells)
+      function findTime(el, elText) {
+        let hm = HOURS_RE.exec(elText);
+        if (hm) return hm;
+        // Check parent's full text (e.g. <tr> containing a day cell + time cell)
+        const parentText = el.parentElement
+          ? (el.parentElement.textContent || '').trim().replace(/\s+/g, ' ')
+          : '';
+        if (parentText.length <= 200) hm = HOURS_RE.exec(parentText);
+        return hm || null;
+      }
+
+      function isClosed(el, elText) {
+        if (/closed/i.test(elText)) return true;
+        const parentText = el.parentElement
+          ? (el.parentElement.textContent || '').trim().replace(/\s+/g, ' ')
+          : '';
+        return /closed/i.test(parentText);
+      }
+
+      // Include tr so table-row text is scanned even when day/time are in separate cells
+      for (const el of document.querySelectorAll('tr, td, li, div, p, span, dt, dd, th')) {
         const text = (el.textContent || '').trim().replace(/\s+/g, ' ');
-        if (text.length > 100) continue; // skip large containers
-        const dayFound = DAY_FULL.find(d =>
-          new RegExp(`^${d}|${d}:`, 'i').test(text)
-        );
+        if (text.length > 200) continue;
+
+        // Try to match a day range: "Mon – Fri" / "Monday - Friday" / "Mon-Fri"
+        const RANGE_RE = /^(Mon(?:day)?|Tue(?:sday)?|Wed(?:nesday)?|Thu(?:rsday)?|Fri(?:day)?|Sat(?:urday)?|Sun(?:day)?)\s*[-–]\s*(Mon(?:day)?|Tue(?:sday)?|Wed(?:nesday)?|Thu(?:rsday)?|Fri(?:day)?|Sat(?:urday)?|Sun(?:day)?)\b/i;
+        const rangeMatch = RANGE_RE.exec(text);
+        if (rangeMatch) {
+          const startDay = resolveDay(rangeMatch[1]);
+          const endDay   = resolveDay(rangeMatch[2]);
+          if (startDay && endDay) {
+            const days = expandDayRange(startDay, endDay);
+            const hm = findTime(el, text);
+            const closed = !hm && isClosed(el, text);
+            for (const day of days) {
+              if (info.hours[day]) continue;
+              if (hm) {
+                info.hours[day] = `${hm[1].trim()}-${hm[2].trim()}`;
+                info.raw_hours_text.push(text.substring(0, 100));
+              } else if (closed) {
+                info.hours[day] = 'Closed';
+              }
+            }
+            continue;
+          }
+        }
+
+        // Single day: "Monday", "Mon", "Monday:", "Mon:"
+        const SINGLE_DAY_RE = /^(Mon(?:day)?|Tue(?:sday)?|Wed(?:nesday)?|Thu(?:rsday)?|Fri(?:day)?|Sat(?:urday)?|Sun(?:day)?)[\s:]/i;
+        const singleMatch = SINGLE_DAY_RE.exec(text);
+        if (!singleMatch) continue;
+        const dayFound = resolveDay(singleMatch[1]);
         if (!dayFound || info.hours[dayFound]) continue;
-        const hm = HOURS_RE.exec(text);
+        const hm = findTime(el, text);
         if (hm) {
           info.hours[dayFound] = `${hm[1].trim()}-${hm[2].trim()}`;
-          info.raw_hours_text.push(text.substring(0, 80));
-        } else if (/closed/i.test(text)) {
+          info.raw_hours_text.push(text.substring(0, 100));
+        } else if (isClosed(el, text)) {
           info.hours[dayFound] = 'Closed';
         }
       }
@@ -418,6 +490,19 @@
       const allLinks    = Array.from(document.querySelectorAll('a[href]'));
       const allForms    = Array.from(document.querySelectorAll('form'));
 
+      // Returns true only if the link points to a real page, not homepage / anchor / empty
+      function isRealLink(a) {
+        const href = (a.href || '').trim();
+        if (!href || href.startsWith('javascript:') || href.startsWith('mailto:') || href.startsWith('tel:')) return false;
+        try {
+          const u = new URL(href);
+          // Reject if path is exactly "/" (or empty) with no meaningful search/hash content
+          if ((u.pathname === '/' || u.pathname === '') && !u.search) return false;
+          if (u.hash && (u.pathname === '/' || u.pathname === '') && !u.search) return false;
+        } catch { return false; }
+        return true;
+      }
+
       // ---- 1. Live Chat Detection ----
       const CHAT_PROVIDERS = [
         { name: 'Gubagoo',          patterns: ['gubagoo.com', 'gubagoo.io'] },
@@ -484,6 +569,7 @@
           'instant-cash-offer', 'sell-my-car', 'trade-value',
         ];
         const tradeLink = allLinks.find(a => {
+          if (!isRealLink(a)) return false;
           const text = a.textContent.toLowerCase();
           const href = (a.href || '').toLowerCase();
           return TRADEIN_LINK_KEYWORDS.some(k => text.includes(k)) ||
@@ -520,6 +606,7 @@
           'service-appt', 'schedule-appointment',
         ];
         const svcLink = allLinks.find(a => {
+          if (!isRealLink(a)) return false;
           const text = a.textContent.toLowerCase();
           const href = (a.href || '').toLowerCase();
           return SVC_LINK_KEYWORDS.some(k => text.includes(k)) ||
@@ -541,6 +628,7 @@
         'credit-application', 'credit-app', 'apply-now', 'get-pre-approved', 'pre-approval',
       ];
       const financeLink = allLinks.find(a => {
+        if (!isRealLink(a)) return false;
         const text = a.textContent.toLowerCase();
         const href = (a.href || '').toLowerCase();
         return FINANCE_LINK_KEYWORDS.some(k => text.includes(k)) ||
@@ -552,16 +640,19 @@
         return ['credit', 'ssn', 'social security', 'annual income', 'employment', 'co-applicant'].some(k => txt.includes(k));
       });
       if (financeForm || financeLink) {
+        const financeUrl = financeLink?.href || (financeForm ? window.location.href : '');
         features.finance_form = {
           detected: true,
-          evidence: financeForm ? 'credit/finance form on page' : (financeLink?.textContent.trim().substring(0, 80) || 'link found'),
-          feature_url: financeForm ? window.location.href : (financeLink?.href || ''),
+          evidence: financeLink ? financeLink.textContent.trim().substring(0, 80) || 'link found'
+                                : 'credit/finance form on page',
+          feature_url: financeUrl,
         };
       }
 
       // ---- 5. Contact / General Inquiry Form Detection ----
       const CONTACT_LINK_KEYWORDS = ['contact us', 'get in touch', 'reach us', 'send us a message', 'contact our', 'contact the'];
       const contactLink = allLinks.find(a => {
+        if (!isRealLink(a)) return false;
         const text = a.textContent.toLowerCase();
         const href = (a.href || '').toLowerCase();
         return CONTACT_LINK_KEYWORDS.some(k => text.includes(k)) ||
@@ -575,10 +666,13 @@
         return txt.includes('contact') || txt.includes('message') || txt.includes('inquiry') || txt.includes('get in touch');
       });
       if (contactForm || contactLink) {
+        // Prefer the explicit contact link URL; only fall back to current page when no link found
+        const contactUrl = contactLink?.href || (contactForm ? window.location.href : '');
         features.contact_form = {
           detected: true,
-          evidence: contactForm ? 'contact form on page' : (contactLink?.textContent.trim().substring(0, 80) || 'link found'),
-          feature_url: contactForm ? window.location.href : (contactLink?.href || ''),
+          evidence: contactLink ? contactLink.textContent.trim().substring(0, 80) || 'link found'
+                                : 'contact form on page',
+          feature_url: contactUrl,
         };
       }
 
@@ -591,6 +685,7 @@
         'order-parts', 'parts-request', 'parts-order', 'parts-inquiry', 'parts-department',
       ];
       const partsLink = allLinks.find(a => {
+        if (!isRealLink(a)) return false;
         const text = a.textContent.toLowerCase();
         const href = (a.href || '').toLowerCase();
         return PARTS_LINK_KEYWORDS.some(k => text.includes(k)) ||
