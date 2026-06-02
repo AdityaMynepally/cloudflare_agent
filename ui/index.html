@@ -565,6 +565,102 @@
     }
     .feature-pill.found .fname  { color: #86efac; }
 
+    /* ---- Sprint 5: Homepage & Site Checks ---- */
+    #hp-checks-section {
+      display: none;
+      margin-top: 20px;
+    }
+    .hpc-header {
+      font-size: 0.82rem;
+      font-weight: 600;
+      color: var(--gray);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 10px;
+    }
+    .hpc-group-label {
+      font-size: 0.7rem;
+      font-weight: 700;
+      color: #555;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin: 14px 0 6px;
+    }
+    .hpc-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+    .hpc-card {
+      background: #111;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 10px 12px;
+    }
+    .hpc-card.pass   { border-left: 3px solid var(--green); }
+    .hpc-card.fail   { border-left: 3px solid var(--red); }
+    .hpc-card.na     { border-left: 3px solid #444; opacity: 0.7; }
+    .hpc-card.warn   { border-left: 3px solid var(--orange); }
+    .hpc-card-head {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      margin-bottom: 4px;
+    }
+    .hpc-icon {
+      flex-shrink: 0;
+      font-size: 0.85rem;
+      width: 18px;
+      text-align: center;
+    }
+    .hpc-icon.pass { color: var(--green); }
+    .hpc-icon.fail { color: var(--red); }
+    .hpc-icon.na   { color: #555; }
+    .hpc-icon.warn { color: var(--orange); }
+    .hpc-title {
+      font-size: 0.75rem;
+      font-weight: 600;
+      color: #ccc;
+      line-height: 1.3;
+    }
+    .hpc-note {
+      font-size: 0.68rem;
+      color: #777;
+      line-height: 1.4;
+      margin-bottom: 4px;
+      padding-left: 25px;
+    }
+    .hpc-items {
+      list-style: none;
+      padding-left: 25px;
+      margin-top: 4px;
+      max-height: 100px;
+      overflow-y: auto;
+    }
+    .hpc-items li {
+      font-size: 0.67rem;
+      color: #aaa;
+      border-bottom: 1px solid #1d1d1d;
+      padding: 2px 0;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      line-height: 1.5;
+    }
+    .hpc-items li:last-child { border-bottom: none; }
+    .hpc-badge {
+      display: inline-block;
+      font-size: 0.6rem;
+      padding: 0 4px;
+      border-radius: 3px;
+      margin-right: 3px;
+      color: #fff;
+    }
+    .hpc-badge.err  { background: var(--red); }
+    .hpc-badge.warn { background: var(--orange); }
+    .hpc-badge.info { background: var(--blue); }
+    .hpc-ok-msg { color: var(--green); font-size: 0.68rem; padding-left: 25px; margin-top: 2px; }
+
     /* ---- Download buttons ---- */
     .download-row {
       display: none;
@@ -708,6 +804,12 @@
       <div class="features-grid" id="features-grid"></div>
     </div>
 
+    <!-- Sprint 5: Homepage & Site Checks -->
+    <div id="hp-checks-section">
+      <p class="hpc-header">Homepage &amp; Site Health Checks</p>
+      <div id="hp-checks-body"></div>
+    </div>
+
     <!-- Download buttons -->
     <div class="download-row" id="download-row">
       <button class="dl-btn" id="download-pptx">⬇ Download PowerPoint</button>
@@ -803,6 +905,8 @@
     document.getElementById('phones-body').innerHTML = '';
     document.getElementById('features-section').style.display = 'none';
     document.getElementById('features-grid').innerHTML = '';
+    document.getElementById('hp-checks-section').style.display = 'none';
+    document.getElementById('hp-checks-body').innerHTML = '';
     setProgress(5);
 
     log(`Starting audit: ${url}`);
@@ -840,7 +944,8 @@
         setProgress(pct);
         log(msg);
       }
-      else if (st === 'summarizing') { setProgress(90); log(msg); }
+      else if (st === 'homepage_checks') { setProgress(82); log(msg, 'info'); }
+      else if (st === 'summarizing')     { setProgress(90); log(msg); }
       else { log(msg); }
     });
 
@@ -877,6 +982,7 @@
       renderGBP(full);
       renderPhones(full);
       renderFeatures(full);
+      renderHomepageChecks(full);
       downloadRow.style.display = 'flex';
     } catch (e) {
       log(`Could not load results: ${e.message}`, 'err');
@@ -1194,6 +1300,228 @@
     }).join('');
 
     document.getElementById('features-section').style.display = 'block';
+  }
+
+  /* ---------- Sprint 5: Homepage & Site Checks ---------- */
+  function renderHomepageChecks(full) {
+    const carouselBroken   = full.carousel_broken_links        || [];
+    const carouselRel      = full.carousel_link_relevance      || [];
+    const ctaBroken        = full.cta_broken_links             || [];
+    const hpImgBroken      = full.homepage_broken_content_images || [];
+    const dimDesktop       = full.carousel_dimension_issues_desktop || [];
+    const dimMobile        = full.carousel_dimension_issues_mobile  || [];
+    const navBroken        = full.nav_broken_links             || [];
+    const navDupes         = full.nav_duplicate_links          || [];
+    const navExpired       = full.nav_expired_dates            || [];
+    const logoCheck        = full.header_logo_check            || null;
+    const socialBroken     = full.social_media_broken          || [];
+    const socialNoTab      = full.social_media_no_new_tab      || [];
+
+    // Nothing to show if all empty and no logo check
+    const hasAnyData = carouselBroken.length || carouselRel.length || ctaBroken.length ||
+      hpImgBroken.length || dimDesktop.length || dimMobile.length ||
+      navBroken.length || navDupes.length || navExpired.length ||
+      logoCheck || socialBroken.length || socialNoTab.length;
+    if (!hasAnyData) return;
+
+    function card(status, title, noteHtml, itemsHtml) {
+      const icon = status === 'pass' ? '✓' : status === 'fail' ? '✗' : status === 'warn' ? '!' : '—';
+      return `
+        <div class="hpc-card ${status}">
+          <div class="hpc-card-head">
+            <span class="hpc-icon ${status}">${icon}</span>
+            <span class="hpc-title">${title}</span>
+          </div>
+          ${noteHtml  ? `<div class="hpc-note">${noteHtml}</div>` : ''}
+          ${itemsHtml ? itemsHtml : ''}
+        </div>`;
+    }
+
+    function okMsg(msg) {
+      return `<div class="hpc-ok-msg">✓ ${msg}</div>`;
+    }
+
+    function itemList(items) {
+      if (!items.length) return '';
+      return `<ul class="hpc-items">${items.join('')}</ul>`;
+    }
+
+    let html = '';
+
+    // ---- Group 1: Carousel ----
+    html += `<div class="hpc-group-label">Carousel / Slideshow</div><div class="hpc-grid">`;
+
+    // Req 1: Carousel broken links
+    if (carouselBroken.length) {
+      const items = carouselBroken.slice(0, 8).map(l =>
+        `<li><span class="hpc-badge err">${l.status_code}</span>${escHtml(truncUrl(l.href))} <small style="color:#555">${escHtml((l.slide_text||'').substring(0,40))}</small></li>`
+      );
+      html += card('fail', 'Carousel Slide Links — 404 Check',
+        `${carouselBroken.length} slide link(s) returning error`,
+        itemList(items));
+    } else if (carouselRel.length) {
+      html += card('pass', 'Carousel Slide Links — 404 Check',
+        'All carousel links checked — no 404s found', '');
+    }
+
+    // Req 2: Carousel link relevance
+    const irrelevant = carouselRel.filter(r => r.relevant === false);
+    const unchecked  = carouselRel.filter(r => r.relevant === null);
+    if (irrelevant.length) {
+      const items = irrelevant.slice(0, 6).map(r =>
+        `<li><span class="hpc-badge warn">mismatch</span>${escHtml((r.slide_text||'').substring(0,50))} → <small>${escHtml(truncUrl(r.href))}</small></li>`
+      );
+      html += card('warn', 'Slide Link Relevance',
+        `${irrelevant.length} slide(s) may link to unrelated pages`,
+        itemList(items));
+    } else if (carouselRel.length) {
+      const note = unchecked.length
+        ? `All matched slides look correct (${unchecked.length} slide(s) couldn't be determined)`
+        : 'All slide links appear topically relevant';
+      html += card('pass', 'Slide Link Relevance', note, '');
+    }
+
+    // Reqs 5 & 6: Slide dimensions
+    const hasDimIssues = dimDesktop.length || dimMobile.length;
+    if (hasDimIssues) {
+      const parts = [];
+      if (dimDesktop.length) parts.push(`Desktop: ${dimDesktop.length} carousel(s) with inconsistent sizes`);
+      if (dimMobile.length)  parts.push(`Mobile: ${dimMobile.length} carousel(s) with inconsistent sizes`);
+      const items = dimDesktop.slice(0, 4).map(d => {
+        const expected = `${d.expected_width}×${d.expected_height}`;
+        const bad = d.inconsistent_slides.map(s => `${s.width}×${s.height}`).join(', ');
+        return `<li><span class="hpc-badge warn">desktop</span>Expected ${expected} — got: ${bad}</li>`;
+      }).concat(dimMobile.slice(0, 4).map(d => {
+        const expected = `${d.expected_width}×${d.expected_height}`;
+        const bad = d.inconsistent_slides.map(s => `${s.width}×${s.height}`).join(', ');
+        return `<li><span class="hpc-badge info">mobile</span>Expected ${expected} — got: ${bad}</li>`;
+      }));
+      html += card('fail', 'Slide Dimension Consistency', parts.join(' · '), itemList(items));
+    } else if (carouselRel.length || carouselBroken !== undefined) {
+      html += card('pass', 'Slide Dimension Consistency', 'All carousel slides are the same size (desktop &amp; mobile)', '');
+    }
+
+    html += `</div>`; // end carousel grid
+
+    // ---- Group 2: Homepage CTAs & Images ----
+    html += `<div class="hpc-group-label">Homepage CTAs &amp; Images</div><div class="hpc-grid">`;
+
+    // Req 3: CTA broken links
+    if (ctaBroken.length) {
+      const items = ctaBroken.slice(0, 6).map(l =>
+        `<li><span class="hpc-badge err">${l.status_code}</span>${escHtml(truncUrl(l.href))} ${l.text ? `<small style="color:#555">"${escHtml(l.text.substring(0,30))}"</small>` : ''}</li>`
+      );
+      html += card('fail', 'CTA Button / Banner Links',
+        `${ctaBroken.length} CTA link(s) returning 404`,
+        itemList(items));
+    } else {
+      html += card('pass', 'CTA Button / Banner Links', 'All checked CTA links return valid pages', '');
+    }
+
+    // Req 4: Non-slide broken images
+    if (hpImgBroken.length) {
+      const items = hpImgBroken.slice(0, 6).map(i =>
+        `<li><span class="hpc-badge err">${i.status_code}</span>${escHtml(truncUrl(i.src))} ${i.alt ? `<small style="color:#555">alt="${escHtml(i.alt.substring(0,25))}"</small>` : ''}</li>`
+      );
+      html += card('fail', 'Homepage Content Images',
+        `${hpImgBroken.length} non-carousel/non-logo image(s) broken`,
+        itemList(items));
+    } else {
+      html += card('pass', 'Homepage Content Images', 'No broken homepage content images detected', '');
+    }
+
+    html += `</div>`; // end cta/images grid
+
+    // ---- Group 3: Navigation ----
+    html += `<div class="hpc-group-label">Navigation</div><div class="hpc-grid">`;
+
+    // Req 8: Nav broken links
+    if (navBroken.length) {
+      const items = navBroken.slice(0, 8).map(l =>
+        `<li><span class="hpc-badge err">${l.status_code}</span>${escHtml(l.text||'')} → <small>${escHtml(truncUrl(l.href))}</small></li>`
+      );
+      html += card('fail', 'Nav Links — 404 Check',
+        `${navBroken.length} navigation link(s) returning 404`,
+        itemList(items));
+    } else {
+      html += card('pass', 'Nav Links — 404 Check', 'All navigation links load successfully', '');
+    }
+
+    // Req 9: Nav duplicates
+    if (navDupes.length) {
+      const items = navDupes.slice(0, 6).map(d =>
+        `<li><span class="hpc-badge warn">${d.occurrences}×</span>${escHtml(d.text||'')} → <small>${escHtml(truncUrl(d.href))}</small></li>`
+      );
+      html += card('warn', 'Nav Duplicate URLs',
+        `${navDupes.length} URL(s) appear more than once in the navigation`,
+        itemList(items));
+    } else {
+      html += card('pass', 'Nav Duplicate URLs', 'No duplicate URLs found in navigation', '');
+    }
+
+    // Req 7: Expired dates
+    if (navExpired.length) {
+      const items = navExpired.slice(0, 6).map(d =>
+        `<li><span class="hpc-badge err">expired</span><b>${escHtml(d.date_str)}</b> — ${escHtml((d.context||'').substring(0,60))} <small style="color:#555">(${escHtml(shortHost(d.source_page||''))})</small></li>`
+      );
+      html += card('fail', 'Expired Content on Pages',
+        `${navExpired.length} expired date(s) found across audited pages`,
+        itemList(items));
+    } else {
+      html += card('pass', 'Expired Content on Pages', 'No expired offers or dates detected', '');
+    }
+
+    html += `</div>`; // end nav grid
+
+    // ---- Group 4: Site-wide ----
+    html += `<div class="hpc-group-label">Site-wide</div><div class="hpc-grid">`;
+
+    // Req 10: Header logo
+    if (logoCheck) {
+      const st = logoCheck.status === 'pass' ? 'pass' : 'fail';
+      html += card(st, 'Header Logo → Homepage',
+        escHtml(logoCheck.note || ''),
+        logoCheck.href ? `<div class="hpc-note" style="margin-top:2px;"><small>${escHtml(truncUrl(logoCheck.href))}</small></div>` : '');
+    } else {
+      html += card('na', 'Header Logo → Homepage', 'Logo check not run', '');
+    }
+
+    // Req 11: Social media 404
+    if (socialBroken.length) {
+      const items = socialBroken.slice(0, 6).map(l =>
+        `<li><span class="hpc-badge err">${l.status_code}</span><b>${escHtml(l.platform)}</b> — ${escHtml(truncUrl(l.href))}</li>`
+      );
+      html += card('fail', 'Social Media Links — Live',
+        `${socialBroken.length} social link(s) returning errors`,
+        itemList(items));
+    } else if (full.social_media_broken !== undefined) {
+      html += card('pass', 'Social Media Links — Live', 'All social media links are accessible', '');
+    }
+
+    // Req 12: Social media new tab
+    if (socialNoTab.length) {
+      const items = socialNoTab.slice(0, 6).map(l =>
+        `<li><span class="hpc-badge warn">no _blank</span><b>${escHtml(l.platform)}</b> — ${escHtml(truncUrl(l.href))}</li>`
+      );
+      html += card('warn', 'Social Icons — Open in New Tab',
+        `${socialNoTab.length} social link(s) missing target="_blank"`,
+        itemList(items));
+    } else if (full.social_media_no_new_tab !== undefined) {
+      html += card('pass', 'Social Icons — Open in New Tab', 'All social media links open in a new tab', '');
+    }
+
+    html += `</div>`; // end site-wide grid
+
+    document.getElementById('hp-checks-body').innerHTML = html;
+    document.getElementById('hp-checks-section').style.display = 'block';
+  }
+
+  function truncUrl(url) {
+    try {
+      const u = new URL(url);
+      const p = u.pathname + u.search;
+      return p.length > 50 ? p.substring(0, 47) + '…' : p || u.hostname;
+    } catch { return String(url).substring(0, 50); }
   }
 
   function escHtml(str) {

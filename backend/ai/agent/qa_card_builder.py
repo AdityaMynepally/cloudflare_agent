@@ -2,7 +2,7 @@
 
 import logging
 from datetime import datetime
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from ai.agent.state import (
     CheckItem,
@@ -14,6 +14,9 @@ from ai.agent.state import (
     ViewportType,
 )
 from ai.agent.qa_checks import SECTION_DEFINITIONS, get_fresh_checks
+
+if TYPE_CHECKING:
+    from ai.agent.state import AuditSession
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +102,7 @@ def _evaluate_check(
     mobile_results: list[ViewportResult],
     all_desktop: list[ViewportResult],
     all_mobile: list[ViewportResult],
+    session: Optional["AuditSession"] = None,
 ) -> tuple[CheckStatus, CheckStatus, str]:
     """Evaluate a single check item, returning (desktop_status, mobile_status, notes)."""
 
@@ -117,19 +121,68 @@ def _evaluate_check(
             notes += " Mobile page load errors detected"
 
     elif check_id == "hp_search_tools":
-        # Check if search/inventory tools exist and function
         d_status = CheckStatus.PASS if desktop_results else CheckStatus.NA
         m_status = CheckStatus.PASS if mobile_results else CheckStatus.NA
 
     elif check_id == "hp_cta_links":
-        if _has_broken_links(desktop_results):
+        # Sprint 5: use dedicated CTA broken link check first; fall back to general broken links
+        if session and session.cta_broken_links:
             d_status = CheckStatus.FAIL
-            notes = "Broken CTA links found on desktop"
-        if _has_broken_links(mobile_results):
             m_status = CheckStatus.FAIL
-            notes += " Broken CTA links found on mobile"
+            notes = f"{len(session.cta_broken_links)} CTA link(s) return 404"
+        elif _has_broken_links(desktop_results):
+            d_status = CheckStatus.FAIL
+            notes = "Broken CTA links found"
+        if not session or not session.cta_broken_links:
+            if _has_broken_links(mobile_results):
+                m_status = CheckStatus.FAIL
 
-    elif check_id in ("hp_slides_same_size", "hp_slides_linked", "hp_slide_count"):
+    elif check_id == "hp_slides_same_size":
+        # Sprint 5: check dimension issues on desktop and mobile
+        if session:
+            if session.carousel_dimension_issues_desktop:
+                d_status = CheckStatus.FAIL
+                notes = f"{len(session.carousel_dimension_issues_desktop)} carousel(s) have inconsistent slide sizes (desktop)"
+            if session.carousel_dimension_issues_mobile:
+                m_status = CheckStatus.FAIL
+                notes += f" {len(session.carousel_dimension_issues_mobile)} carousel(s) have inconsistent slide sizes (mobile)"
+        else:
+            d_status = CheckStatus.PASS if desktop_results else CheckStatus.NA
+            m_status = CheckStatus.PASS if mobile_results else CheckStatus.NA
+
+    elif check_id == "hp_slides_linked":
+        # Sprint 5: relevance check
+        if session:
+            irrelevant = [r for r in session.carousel_link_relevance if r.get("relevant") is False]
+            if irrelevant:
+                d_status = CheckStatus.FAIL
+                notes = f"{len(irrelevant)} slide link(s) may point to incorrect pages"
+            elif session.carousel_link_relevance:
+                d_status = CheckStatus.PASS
+        else:
+            d_status = CheckStatus.PASS if desktop_results else CheckStatus.NA
+
+    elif check_id == "hp_carousel_no_broken":
+        if session:
+            if session.carousel_broken_links:
+                d_status = CheckStatus.FAIL
+                notes = f"{len(session.carousel_broken_links)} carousel slide link(s) return 404"
+            else:
+                d_status = CheckStatus.PASS if desktop_results else CheckStatus.NA
+        else:
+            d_status = CheckStatus.PASS if desktop_results else CheckStatus.NA
+
+    elif check_id == "hp_content_images":
+        if session:
+            if session.homepage_broken_content_images:
+                d_status = CheckStatus.FAIL
+                notes = f"{len(session.homepage_broken_content_images)} non-carousel homepage image(s) broken"
+            else:
+                d_status = CheckStatus.PASS if desktop_results else CheckStatus.NA
+        else:
+            d_status = CheckStatus.PASS if desktop_results else CheckStatus.NA
+
+    elif check_id == "hp_slide_count":
         d_status = CheckStatus.PASS if desktop_results else CheckStatus.NA
 
     elif check_id == "hp_floating_widgets":
@@ -137,7 +190,13 @@ def _evaluate_check(
         m_status = CheckStatus.PASS if mobile_results else CheckStatus.NA
 
     elif check_id == "hp_no_expired":
-        d_status = CheckStatus.PASS if desktop_results else CheckStatus.NA
+        if session and session.nav_expired_dates:
+            hp_expired = [d for d in session.nav_expired_dates if d.get("source_page") == (session.target_url if session else "")]
+            if hp_expired:
+                d_status = CheckStatus.FAIL
+                notes = f"{len(hp_expired)} expired date(s) found on homepage"
+        else:
+            d_status = CheckStatus.PASS if desktop_results else CheckStatus.NA
 
     # ---- INVENTORY checks ----
     elif check_id == "inv_vdp_loads":
@@ -172,6 +231,17 @@ def _evaluate_check(
         if _has_broken_links(all_mobile):
             m_status = CheckStatus.FAIL
 
+    elif check_id == "gc_logo_link":
+        if session and session.header_logo_check:
+            logo = session.header_logo_check
+            if logo.get("status") == "pass":
+                d_status = CheckStatus.PASS
+            else:
+                d_status = CheckStatus.FAIL
+                notes = logo.get("note", "Logo link issue detected")
+        else:
+            d_status = CheckStatus.PASS if all_desktop else CheckStatus.NA
+
     elif check_id == "gc_images_optimized":
         if _has_performance_issues(all_desktop):
             d_status = CheckStatus.FAIL
@@ -184,13 +254,52 @@ def _evaluate_check(
         d_status = CheckStatus.PASS if all_desktop else CheckStatus.NA
 
     elif check_id == "gc_nav_links":
-        if _has_broken_links(all_desktop):
+        if session and session.nav_broken_links:
             d_status = CheckStatus.FAIL
-        if _has_broken_links(all_mobile):
+            m_status = CheckStatus.FAIL
+            notes = f"{len(session.nav_broken_links)} nav link(s) return 404"
+        elif _has_broken_links(all_desktop):
+            d_status = CheckStatus.FAIL
+        elif _has_broken_links(all_mobile):
             m_status = CheckStatus.FAIL
 
-    elif check_id in ("gc_links_new_tab", "gc_expired_content"):
+    elif check_id == "gc_nav_no_dupes":
+        if session and session.nav_duplicate_links:
+            d_status = CheckStatus.FAIL
+            notes = f"{len(session.nav_duplicate_links)} duplicate URL(s) in navigation"
+        else:
+            d_status = CheckStatus.PASS if all_desktop else CheckStatus.NA
+
+    elif check_id == "gc_social_links_live":
+        if session:
+            if session.social_media_broken:
+                d_status = CheckStatus.FAIL
+                platforms = ", ".join({l.get("platform", "") for l in session.social_media_broken})
+                notes = f"Broken social links: {platforms}"
+            elif session.social_media_no_new_tab or session.social_media_broken is not None:
+                d_status = CheckStatus.PASS if all_desktop else CheckStatus.NA
+        else:
+            d_status = CheckStatus.PASS if all_desktop else CheckStatus.NA
+
+    elif check_id == "gc_social_new_tab":
+        if session and session.social_media_no_new_tab:
+            d_status = CheckStatus.FAIL
+            platforms = ", ".join({l.get("platform", "") for l in session.social_media_no_new_tab})
+            notes = f"Social links missing target=_blank: {platforms}"
+        elif session is not None:
+            d_status = CheckStatus.PASS if all_desktop else CheckStatus.NA
+        else:
+            d_status = CheckStatus.PASS if all_desktop else CheckStatus.NA
+
+    elif check_id == "gc_links_new_tab":
         d_status = CheckStatus.PASS if all_desktop else CheckStatus.NA
+
+    elif check_id == "gc_expired_content":
+        if session and session.nav_expired_dates:
+            d_status = CheckStatus.FAIL
+            notes = f"{len(session.nav_expired_dates)} expired date(s) found across audited pages"
+        else:
+            d_status = CheckStatus.PASS if all_desktop else CheckStatus.NA
 
     # ---- LEAD FORMS & WIDGETS checks ----
     elif check_id == "lf_native_forms":
@@ -214,6 +323,7 @@ def build_qa_card(
     desktop_results: list[ViewportResult],
     mobile_results: list[ViewportResult],
     llm=None,
+    session: Optional["AuditSession"] = None,
 ) -> QAAuditCard:
     """Build the full QA audit card from viewport results.
 
@@ -255,7 +365,7 @@ def build_qa_card(
 
         for check in checks:
             d_status, m_status, notes = _evaluate_check(
-                check.id, sec_desktop, sec_mobile, desktop_results, mobile_results
+                check.id, sec_desktop, sec_mobile, desktop_results, mobile_results, session
             )
             check.desktop_status = d_status
             if check.has_mobile_column:

@@ -164,13 +164,303 @@
   // ---- Images ----
 
   function getAllImages() {
-    return Array.from(document.querySelectorAll('img')).map(img => ({
-      src: img.currentSrc || img.src || '',
-      alt: img.alt || '',
-      naturalWidth: img.naturalWidth || 0,
-      naturalHeight: img.naturalHeight || 0,
-      loading: img.loading || '',
-    })).filter(img => img.src && !img.src.startsWith('data:') && !img.src.startsWith('blob:'));
+    const CAROUSEL_ANCESTORS = '.swiper-wrapper,.slick-list,.owl-stage,.owl-carousel,.carousel,[class*="carousel"],[class*="slider"],[class*="swiper"],.hero-slider,.banner-slider';
+    return Array.from(document.querySelectorAll('img')).map(img => {
+      const srcLower = (img.currentSrc || img.src || '').toLowerCase();
+      const altLower = (img.alt || '').toLowerCase();
+      const classLower = (img.className || '').toLowerCase();
+      const isLogo = srcLower.includes('logo') || altLower.includes('logo') || classLower.includes('logo') ||
+                     !!(img.closest('header,#header,.header') && (srcLower.includes('logo') || altLower.includes('logo') || classLower.includes('logo') || img.closest('a[class*="logo"],a[class*="brand"],.navbar-brand')));
+      const isInCarousel = !!img.closest(CAROUSEL_ANCESTORS);
+      return {
+        src: img.currentSrc || img.src || '',
+        alt: img.alt || '',
+        naturalWidth: img.naturalWidth || 0,
+        naturalHeight: img.naturalHeight || 0,
+        loading: img.loading || '',
+        is_logo: isLogo,
+        is_in_carousel: isInCarousel,
+      };
+    }).filter(img => img.src && !img.src.startsWith('data:') && !img.src.startsWith('blob:'));
+  }
+
+  // ---- Sprint 5: Carousel / Slideshow Data ----
+
+  function getCarouselData() {
+    const CAROUSEL_CONTAINERS = [
+      '.swiper-wrapper', '.slick-list', '.owl-stage', '.owl-carousel',
+      '.carousel', '[class*="carousel"]', '[class*="slider"]', '[class*="swiper"]',
+      '[data-ride="carousel"]', '[data-slick]', '.hero-slider', '.banner-slider',
+      '.homepage-slider', '.home-slider', '#home-slider', '#homepage-slider',
+    ];
+    const SLIDE_SELECTORS = [
+      '.swiper-slide:not(.swiper-slide-duplicate)',
+      '.slick-slide:not(.slick-cloned)',
+      '.owl-item:not(.cloned)',
+      '.carousel-item',
+      '[class*="slide-item"]',
+      '[class*="banner-item"]',
+      '.slide',
+    ];
+
+    const seen = new Set();
+    const carousels = [];
+
+    for (const contSel of CAROUSEL_CONTAINERS) {
+      try {
+        for (const container of document.querySelectorAll(contSel)) {
+          if (seen.has(container)) continue;
+          seen.add(container);
+
+          let slides = [];
+          for (const slideSel of SLIDE_SELECTORS) {
+            const slideEls = container.querySelectorAll(slideSel);
+            if (slideEls.length >= 2) {
+              for (const slide of slideEls) {
+                const rect = slide.getBoundingClientRect();
+                if (rect.width < 10 && rect.height < 10) continue;
+                const linkEl = slide.tagName === 'A' ? slide : slide.querySelector('a[href]');
+                slides.push({
+                  href: linkEl ? linkEl.href : null,
+                  link_text: linkEl ? (linkEl.getAttribute('aria-label') || linkEl.textContent || '').trim().substring(0, 200) : null,
+                  slide_text: slide.textContent.trim().replace(/\s+/g, ' ').substring(0, 300),
+                  width: Math.round(rect.width),
+                  height: Math.round(rect.height),
+                });
+              }
+              if (slides.length > 0) break;
+            }
+          }
+
+          // Fallback: direct children with significant size
+          if (slides.length < 2) {
+            slides = [];
+            for (const child of container.children) {
+              const rect = child.getBoundingClientRect();
+              if (rect.width < 100 || rect.height < 50) continue;
+              const linkEl = child.tagName === 'A' ? child : child.querySelector('a[href]');
+              slides.push({
+                href: linkEl ? linkEl.href : null,
+                link_text: linkEl ? (linkEl.getAttribute('aria-label') || linkEl.textContent || '').trim().substring(0, 200) : null,
+                slide_text: child.textContent.trim().replace(/\s+/g, ' ').substring(0, 300),
+                width: Math.round(rect.width),
+                height: Math.round(rect.height),
+              });
+            }
+          }
+
+          if (slides.length >= 2) {
+            carousels.push({ selector: contSel, slides: slides.slice(0, 20) });
+          }
+        }
+      } catch (_) {}
+    }
+    return carousels;
+  }
+
+  // ---- Sprint 5: CTA Buttons / Banners ----
+
+  function getCTALinks() {
+    const CTA_SELECTORS = [
+      'a.btn', 'a.button', 'a[class*="cta"]', 'a[class*="btn-primary"]',
+      'a[class*="btn-cta"]', '.hero a[href]', '.banner a[href]',
+      '[class*="hero"] a[href]', '[class*="banner"] a[href]',
+      '.cta-section a[href]', '[class*="cta"] a[href]',
+      'a[class*="call-to-action"]', '.offer a[href]', '[class*="offer"] a[href]',
+    ];
+
+    const seen = new Set();
+    const ctas = [];
+
+    for (const sel of CTA_SELECTORS) {
+      try {
+        for (const el of document.querySelectorAll(sel)) {
+          const href = el.href || '';
+          if (!href || href.startsWith('javascript:') || href.startsWith('mailto:') || href.startsWith('tel:')) continue;
+          if (seen.has(href)) continue;
+          seen.add(href);
+          ctas.push({
+            href,
+            text: (el.getAttribute('aria-label') || el.textContent || '').trim().substring(0, 100),
+          });
+        }
+      } catch (_) {}
+    }
+    return ctas;
+  }
+
+  // ---- Sprint 5: Primary Navigation Menu ----
+
+  function getNavMenuData() {
+    const NAV_SELECTORS = [
+      'nav[role="navigation"]', '[role="navigation"]', 'nav',
+      'header nav', '.main-nav', '.primary-nav', '.nav-menu',
+      '.navigation', '#navigation', '#main-nav', '.site-nav',
+      '.top-nav', '.header-nav', '#mainmenu', '.main-menu',
+    ];
+
+    const seenNavs = new Set();
+    const hrefCounts = {};
+    const allLinks = [];
+
+    for (const sel of NAV_SELECTORS) {
+      try {
+        for (const nav of document.querySelectorAll(sel)) {
+          if (seenNavs.has(nav)) continue;
+          seenNavs.add(nav);
+          for (const link of nav.querySelectorAll('a[href]')) {
+            const href = link.href || '';
+            if (!href || href.startsWith('javascript:') || href.startsWith('tel:') || href.startsWith('mailto:')) continue;
+            // Skip pure anchor links
+            try {
+              const u = new URL(href);
+              if (u.hash && (u.pathname === '/' || u.pathname === '') && !u.search) continue;
+            } catch { continue; }
+
+            const text = (link.getAttribute('aria-label') || link.textContent || '').trim().substring(0, 100);
+            hrefCounts[href] = (hrefCounts[href] || 0) + 1;
+            if (hrefCounts[href] === 1) {
+              allLinks.push({ href, text, location: sel });
+            } else {
+              const existing = allLinks.find(l => l.href === href);
+              if (existing) existing.occurrences = (existing.occurrences || 1) + 1;
+            }
+          }
+        }
+      } catch (_) {}
+    }
+    return allLinks.slice(0, 60);
+  }
+
+  // ---- Sprint 5: Header Logo Check ----
+
+  function getHeaderLogoInfo() {
+    const result = { has_link: false, href: null, links_to_homepage: false };
+    const LOGO_SELECTORS = [
+      'header a[class*="logo"]', 'header [class*="logo"] a', 'header .logo a',
+      '#header a[class*="logo"]', '.header a[class*="logo"]',
+      'a[class*="logo"]', '.navbar-brand', '[class*="navbar-brand"] a',
+      '[class*="brand"] a', 'header a[href="/"]', 'a[href="/"] img',
+      '.site-logo a', '#logo a', 'header img[class*="logo"]',
+    ];
+
+    const origin = window.location.origin;
+
+    for (const sel of LOGO_SELECTORS) {
+      try {
+        const el = document.querySelector(sel);
+        if (!el) continue;
+        const anchor = el.tagName === 'A' ? el : (el.closest('a') || el.querySelector('a'));
+        if (anchor && anchor.href) {
+          result.has_link = true;
+          result.href = anchor.href;
+          try {
+            const u = new URL(result.href);
+            const path = u.pathname.replace(/\/$/, '') || '/';
+            result.links_to_homepage = u.origin === origin && (path === '/' || path === '');
+          } catch {}
+          return result;
+        }
+      } catch (_) {}
+    }
+    return result;
+  }
+
+  // ---- Sprint 5: Social Media Links ----
+
+  function getSocialMediaLinks() {
+    const SOCIAL_PATTERNS = [
+      { platform: 'Facebook',     patterns: ['facebook.com', 'fb.com'] },
+      { platform: 'Instagram',    patterns: ['instagram.com'] },
+      { platform: 'X (Twitter)', patterns: ['twitter.com', 'x.com'] },
+      { platform: 'YouTube',      patterns: ['youtube.com', 'youtu.be'] },
+      { platform: 'LinkedIn',     patterns: ['linkedin.com'] },
+      { platform: 'TikTok',       patterns: ['tiktok.com'] },
+      { platform: 'Pinterest',    patterns: ['pinterest.com'] },
+      { platform: 'Snapchat',     patterns: ['snapchat.com'] },
+    ];
+
+    const seen = new Set();
+    const links = [];
+
+    for (const a of document.querySelectorAll('a[href]')) {
+      const href = a.href || '';
+      if (!href || seen.has(href)) continue;
+      const hrefLower = href.toLowerCase();
+      for (const { platform, patterns } of SOCIAL_PATTERNS) {
+        if (patterns.some(p => hrefLower.includes(p))) {
+          seen.add(href);
+          links.push({
+            href,
+            platform,
+            opens_new_tab: a.getAttribute('target') === '_blank',
+            rel: a.getAttribute('rel') || '',
+            text: (a.getAttribute('aria-label') || a.textContent || '').trim().substring(0, 80),
+          });
+          break;
+        }
+      }
+    }
+    return links;
+  }
+
+  // ---- Sprint 5: Expired Date Scanning ----
+
+  function getExpiredDates() {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const MONTH_MAP = {
+      jan: 0, january: 0, feb: 1, february: 1, mar: 2, march: 2,
+      apr: 3, april: 3, may: 4, jun: 5, june: 5, jul: 6, july: 6,
+      aug: 7, august: 7, sep: 8, september: 8, oct: 9, october: 9,
+      nov: 10, november: 10, dec: 11, december: 11,
+    };
+
+    // Patterns: "January 31, 2025", "Jan 31 2025", "12/31/2025", "12/31/25"
+    const NAMED_DATE_RE = /\b(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+(\d{1,2}),?\s+(20\d{2})\b/gi;
+    const SLASH_DATE_RE = /\b(\d{1,2})\/(\d{1,2})\/(20?\d{2})\b/g;
+    const EXPIRY_CONTEXT_RE = /expir|valid\s+(?:through|until)|through\s+\w|offer\s+ends|sale\s+ends|ends\s+\d|deadline|limited\s+time|hurry/i;
+
+    const expired = [];
+    const seen = new Set();
+
+    const selectors = 'p,li,td,div,span,h1,h2,h3,h4,h5,h6,.disclaimer,.legal,.offer,.promotion,[class*="expir"],[class*="offer"],[class*="promo"],[class*="special"]';
+
+    for (const el of document.querySelectorAll(selectors)) {
+      // Skip large containers to avoid scanning the whole page body
+      if (el.children.length > 5) continue;
+      const text = (el.textContent || '').trim().replace(/\s+/g, ' ');
+      if (text.length > 400 || text.length < 8) continue;
+      if (!EXPIRY_CONTEXT_RE.test(text)) continue;
+
+      const tryAdd = (dateStr, parsedDate) => {
+        if (!parsedDate || isNaN(parsedDate.getTime()) || parsedDate >= today) return;
+        const key = dateStr + '|' + text.substring(0, 60);
+        if (seen.has(key)) return;
+        seen.add(key);
+        expired.push({ date_str: dateStr, context: text.substring(0, 200) });
+      };
+
+      NAMED_DATE_RE.lastIndex = 0;
+      let m;
+      while ((m = NAMED_DATE_RE.exec(text)) !== null) {
+        const monthKey = m[1].substring(0, 3).toLowerCase();
+        const month = MONTH_MAP[monthKey];
+        if (month !== undefined) {
+          tryAdd(m[0], new Date(parseInt(m[3]), month, parseInt(m[2])));
+        }
+      }
+
+      SLASH_DATE_RE.lastIndex = 0;
+      while ((m = SLASH_DATE_RE.exec(text)) !== null) {
+        let year = parseInt(m[3]);
+        if (year < 100) year += 2000;
+        tryAdd(m[0], new Date(year, parseInt(m[1]) - 1, parseInt(m[2])));
+      }
+    }
+
+    return expired.slice(0, 20);
   }
 
   // ---- Axe-core Injection & Run ----
@@ -732,6 +1022,13 @@
       page_features: getPageFeatures(),
       phone_numbers: getPhoneNumbers(),
       business_info: getBusinessInfo(),
+      // Sprint 5 — homepage & site-wide checks
+      carousel_data: getCarouselData(),
+      cta_links: getCTALinks(),
+      nav_menu_data: getNavMenuData(),
+      header_logo_info: getHeaderLogoInfo(),
+      social_links: getSocialMediaLinks(),
+      page_dates: getExpiredDates(),
       timestamp: new Date().toISOString()
     };
 

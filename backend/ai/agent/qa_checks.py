@@ -15,8 +15,10 @@ HOMEPAGE_CHECKS = [
     CheckItem(id="hp_template_loads", label="Template/Layout Loads & Displays Properly"),
     CheckItem(id="hp_search_tools", label="Inventory Search Tools Function Properly"),
     CheckItem(id="hp_cta_links", label="All CTA Graphics & Buttons Link to Proper Pages"),
-    CheckItem(id="hp_slides_same_size", label="All Slides are the Same Size", has_mobile_column=False),
+    CheckItem(id="hp_slides_same_size", label="All Slides are the Same Size"),  # Sprint 5: now has mobile col
     CheckItem(id="hp_slides_linked", label="All Slides are Linked to Proper Page", has_mobile_column=False),
+    CheckItem(id="hp_carousel_no_broken", label="Carousel Slide Links Return No 404 Errors", has_mobile_column=False),
+    CheckItem(id="hp_content_images", label="Non-Slide Homepage Images Load Without Errors", has_mobile_column=False),
     CheckItem(id="hp_floating_widgets", label="Floating Widgets Do Not Interrupt User Experience"),
     CheckItem(id="hp_no_expired", label="No Expired Content", has_mobile_column=False),
     CheckItem(id="hp_slide_count", label="Slide Count", has_mobile_column=False),
@@ -37,10 +39,14 @@ INVENTORY_CHECKS = [
 
 GENERAL_CONTENT_CHECKS = [
     CheckItem(id="gc_header_icons", label="Header Icons are Linked Properly"),
+    CheckItem(id="gc_logo_link", label="Header Logo Links Back to Homepage", has_mobile_column=False),
     CheckItem(id="gc_images_optimized", label="Images are Web Optimized", has_mobile_column=False),
     CheckItem(id="gc_phone_numbers", label="All Phone Numbers Ring to Dealership", has_mobile_column=False),
     CheckItem(id="gc_map_location", label="Map on Directions Page Reflects Proper Location", has_mobile_column=False),
     CheckItem(id="gc_nav_links", label="Main Navigation Menu Links All Route to Proper Pages"),
+    CheckItem(id="gc_nav_no_dupes", label="Navigation Menu Has No Duplicate URLs", has_mobile_column=False),
+    CheckItem(id="gc_social_links_live", label="Social Media Icon Links Are Live (No 404)", has_mobile_column=False),
+    CheckItem(id="gc_social_new_tab", label="Social Media Icons Open in New Tab", has_mobile_column=False),
     CheckItem(id="gc_links_new_tab", label="Links Open in New Tab Where Necessary", has_mobile_column=False),
     CheckItem(id="gc_expired_content", label="Interior Pages Swept for Expired Content", has_mobile_column=False),
 ]

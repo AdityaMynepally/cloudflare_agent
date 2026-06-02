@@ -36,6 +36,16 @@ from ai.analysis.performance import analyze_performance
 from ai.analysis.links import check_links
 from ai.analysis.images import check_images
 from ai.analysis.gbp import fetch_gbp_data, compare_address, compare_hours
+from ai.analysis.homepage import (
+    check_carousel_links,
+    assess_carousel_relevance,
+    check_cta_links,
+    check_homepage_content_images,
+    analyze_slide_dimensions,
+    check_nav_links,
+    check_header_logo,
+    check_social_media_links,
+)
 from ai.analysis.summarizer import summarize_page, summarize_site, generate_recommendations
 from scoring.calculator import calculate_page_scores, calculate_site_score, score_to_grade
 
@@ -201,6 +211,10 @@ class AuditOrchestrator:
                 "viewport": "mobile",
             })
 
+            # ---- Phase 2.1: HOMEPAGE-SPECIFIC CHECKS (Sprint 5) ----
+            _mobile_cap_for_hp = mobile_capture if not mobile_capture.get("error") else {}
+            await self._run_homepage_checks(session, discover_result, _mobile_cap_for_hp, emit)
+
             # Remaining pages: desktop + mobile for each
             for idx, page_url in enumerate(urls_to_audit[1:], start=2):
                 # Desktop pass
@@ -320,6 +334,7 @@ class AuditOrchestrator:
                 desktop_results=session.desktop_results,
                 mobile_results=session.mobile_results,
                 llm=self.llm,
+                session=session,
             )
 
             # LLM summaries
@@ -363,6 +378,18 @@ class AuditOrchestrator:
                 "oversized_images_count": len(session.oversized_images_all),
                 "js_errors_count": len(session.js_errors_all),
                 "dealership_features": session.dealership_features,
+                # Sprint 5 counts
+                "carousel_broken_links_count": len(session.carousel_broken_links),
+                "cta_broken_links_count": len(session.cta_broken_links),
+                "nav_broken_links_count": len(session.nav_broken_links),
+                "nav_duplicate_links_count": len(session.nav_duplicate_links),
+                "social_media_broken_count": len(session.social_media_broken),
+                "social_media_no_new_tab_count": len(session.social_media_no_new_tab),
+                "header_logo_check": session.header_logo_check,
+                "carousel_dimension_issues_desktop": len(session.carousel_dimension_issues_desktop),
+                "carousel_dimension_issues_mobile": len(session.carousel_dimension_issues_mobile),
+                "nav_expired_dates_count": len(session.nav_expired_dates),
+                "homepage_broken_content_images_count": len(session.homepage_broken_content_images),
                 "avg_load_time_ms": (
                     round(sum(t["load_time_ms"] for t in session.page_load_times if t.get("viewport") == "desktop") /
                           max(len([t for t in session.page_load_times if t.get("viewport") == "desktop"]), 1), 0)
@@ -677,6 +704,76 @@ class AuditOrchestrator:
         except Exception as e:
             logger.warning(f"Contact form phase error (non-fatal): {e}", exc_info=True)
 
+    async def _run_homepage_checks(
+        self,
+        session: AuditSession,
+        desktop_capture: dict,
+        mobile_capture: dict,
+        emit,
+    ) -> None:
+        """Sprint 5 — run all homepage-specific checks after homepage captures."""
+        try:
+            await emit("progress", "Running homepage-specific checks...", {"status": "homepage_checks"})
+
+            base_url = session.target_url
+            carousel_desktop = desktop_capture.get("carousel_data") or []
+            carousel_mobile = mobile_capture.get("carousel_data") or []
+            cta_links = desktop_capture.get("cta_links") or []
+            nav_links = desktop_capture.get("nav_menu_data") or []
+            logo_info = desktop_capture.get("header_logo_info") or {}
+            social_links = desktop_capture.get("social_links") or []
+            images = desktop_capture.get("images") or []
+            image_resources = (desktop_capture.get("performance_data") or {}).get("imageResources") or []
+
+            # Run all async checks concurrently
+            (
+                carousel_broken,
+                cta_broken,
+                homepage_img_broken,
+                nav_broken_and_dupes,
+                social_broken_and_tabs,
+            ) = await asyncio.gather(
+                check_carousel_links(carousel_desktop, base_url),
+                check_cta_links(cta_links, base_url),
+                check_homepage_content_images(images, base_url, image_resources),
+                check_nav_links(nav_links, base_url),
+                check_social_media_links(social_links),
+            )
+
+            nav_broken, nav_dupes = nav_broken_and_dupes
+            social_broken, social_no_new_tab = social_broken_and_tabs
+
+            # Synchronous checks
+            session.carousel_broken_links = carousel_broken
+            session.carousel_link_relevance = assess_carousel_relevance(carousel_desktop)
+            session.cta_broken_links = cta_broken
+            session.homepage_broken_content_images = homepage_img_broken
+            session.carousel_dimension_issues_desktop = analyze_slide_dimensions(carousel_desktop)
+            session.carousel_dimension_issues_mobile = analyze_slide_dimensions(carousel_mobile)
+            session.nav_broken_links = nav_broken
+            session.nav_duplicate_links = nav_dupes
+            session.header_logo_check = check_header_logo(logo_info, base_url)
+            session.social_media_broken = social_broken
+            session.social_media_no_new_tab = social_no_new_tab
+
+            summary_parts = []
+            if carousel_broken:
+                summary_parts.append(f"{len(carousel_broken)} broken carousel link(s)")
+            if cta_broken:
+                summary_parts.append(f"{len(cta_broken)} broken CTA link(s)")
+            if nav_broken:
+                summary_parts.append(f"{len(nav_broken)} broken nav link(s)")
+            if social_broken:
+                summary_parts.append(f"{len(social_broken)} broken social link(s)")
+            if session.carousel_dimension_issues_desktop:
+                summary_parts.append("carousel dimension inconsistencies found")
+
+            msg = "Homepage checks complete" + (f": {', '.join(summary_parts)}" if summary_parts else " — all clear")
+            await emit("progress", msg, {"status": "homepage_checks"})
+
+        except Exception as e:
+            logger.warning(f"Homepage checks error (non-fatal): {e}", exc_info=True)
+
     async def _run_gbp_phase(self, session: AuditSession, emit) -> None:
         """Query Google Business Profile and compare address + hours."""
         try:
@@ -745,6 +842,13 @@ class AuditOrchestrator:
         page_features = capture.get("page_features") or {}
         phone_numbers = capture.get("phone_numbers") or []
         business_info = capture.get("business_info") or {}
+        # Sprint 5 — per-page homepage data (passed through from content script)
+        carousel_data = capture.get("carousel_data") or []
+        cta_links_raw = capture.get("cta_links") or []
+        nav_menu_data = capture.get("nav_menu_data") or []
+        header_logo_info = capture.get("header_logo_info") or {}
+        social_links = capture.get("social_links") or []
+        page_dates = capture.get("page_dates") or []
         screenshot_b64 = capture.get("screenshot_base64")
 
         # Determine page type
@@ -823,6 +927,12 @@ class AuditOrchestrator:
             page_features=page_features,
             phone_numbers=phone_numbers,
             business_info=business_info,
+            carousel_data=carousel_data,
+            cta_links=cta_links_raw,
+            nav_menu_data=nav_menu_data,
+            header_logo_info=header_logo_info,
+            social_links=social_links,
+            page_dates=page_dates,
         )
 
         return result
@@ -914,6 +1024,10 @@ class AuditOrchestrator:
                 if norm and norm not in known_phones:
                     known_phones.add(norm)
                     session.phone_numbers_all.append({**ph, "source_page": page_url})
+
+            # Sprint 5: aggregate expired dates (req 7 — scan nav pages for expired content)
+            for date_entry in desktop_result.page_dates:
+                session.nav_expired_dates.append({**date_entry, "source_page": page_url})
 
         if mobile_result and not mobile_result.error:
             # JS errors from mobile
