@@ -1411,11 +1411,12 @@
         const okCls = r.ok ? 'ok' : 'err';
         const sc    = r.status_code || (r.ok ? '2xx' : '?');
         const label = escHtml(r.text || r.slide_text || r.platform || '');
-        const url   = escHtml(truncUrl(r.href || r.src || ''));
+        const fullUrl = r.href || r.src || '';
+        const url     = escHtml(truncUrl(fullUrl));
         return `<tr>
           <td><span class="status-dot ${okCls}"></span></td>
           <td><span class="sc-pill ${okCls}">${sc}</span></td>
-          <td class="url-cell" title="${escHtml(r.href || '')}">${url}${label ? ` <span style="color:#555">· ${label.substring(0,30)}</span>` : ''}</td>
+          <td class="url-cell" title="${escHtml(fullUrl)}"><a href="${escHtml(fullUrl)}" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:underline;text-decoration-color:#444">${url}</a>${label ? ` <span style="color:#555">· ${label.substring(0,30)}</span>` : ''}</td>
         </tr>`;
       }).join('');
       return `
