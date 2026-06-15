@@ -92,13 +92,15 @@ def _is_broken(status: int) -> bool:
 async def check_carousel_links(
     carousel_data: list[dict],
     base_url: str,
-) -> list[dict]:
-    """Return list of carousel slide links that return 404/410.
+) -> tuple[list[dict], list[dict]]:
+    """Check carousel slide links for 404/410.
 
-    Each entry: {href, slide_text, status_code, carousel_index}
+    Returns (broken, all_checked).
+    broken:      [{href, slide_text, status_code, carousel_index}]
+    all_checked: [{href, slide_text, status_code, ok, carousel_index}]
     """
     if not carousel_data:
-        return []
+        return [], []
 
     slide_links: list[dict] = []
     seen: set[str] = set()
@@ -115,16 +117,19 @@ async def check_carousel_links(
             })
 
     if not slide_links:
-        return []
+        return [], []
 
     statuses = await _check_url_statuses([s["href"] for s in slide_links], base_url=base_url)
-    broken = []
+    broken: list[dict] = []
+    all_checked: list[dict] = []
     for entry in slide_links:
         sc = statuses.get(entry["href"], 0)
-        if _is_broken(sc):
+        ok = not _is_broken(sc)
+        all_checked.append({**entry, "status_code": sc, "ok": ok})
+        if not ok:
             broken.append({**entry, "status_code": sc})
 
-    return broken
+    return broken, all_checked
 
 
 # --------------------------------------------------------------------------- #
@@ -273,13 +278,15 @@ def assess_carousel_relevance(carousel_data: list[dict]) -> list[dict]:
 async def check_cta_links(
     cta_links: list[dict],
     base_url: str,
-) -> list[dict]:
-    """Return list of CTA links that return 404/410.
+) -> tuple[list[dict], list[dict]]:
+    """Check CTA button/banner links for 404/410.
 
-    Each entry: {href, text, status_code}
+    Returns (broken, all_checked).
+    broken:      [{href, text, status_code}]
+    all_checked: [{href, text, status_code, ok}]
     """
     if not cta_links:
-        return []
+        return [], []
 
     seen: set[str] = set()
     unique = []
@@ -290,13 +297,16 @@ async def check_cta_links(
             unique.append(c)
 
     statuses = await _check_url_statuses([c["href"] for c in unique], base_url=base_url)
-    broken = []
+    broken: list[dict] = []
+    all_checked: list[dict] = []
     for entry in unique:
         sc = statuses.get(entry["href"], 0)
-        if _is_broken(sc):
+        ok = not _is_broken(sc)
+        all_checked.append({"href": entry["href"], "text": entry.get("text", ""), "status_code": sc, "ok": ok})
+        if not ok:
             broken.append({"href": entry["href"], "text": entry.get("text", ""), "status_code": sc})
 
-    return broken
+    return broken, all_checked
 
 
 # --------------------------------------------------------------------------- #
@@ -408,22 +418,22 @@ def analyze_slide_dimensions(carousel_data: list[dict]) -> list[dict]:
 async def check_nav_links(
     nav_links: list[dict],
     base_url: str,
-) -> tuple[list[dict], list[dict]]:
+) -> tuple[list[dict], list[dict], list[dict]]:
     """Check navigation links for 404s and duplicate URLs.
 
-    Returns (broken_links, duplicate_links).
+    Returns (broken_links, duplicate_links, all_checked).
     broken_links: [{href, text, status_code}]
     duplicate_links: [{href, text, occurrences}]
+    all_checked: [{href, text, status_code, ok}]
     """
     if not nav_links:
-        return [], []
+        return [], [], []
 
     # Deduplicate for HTTP checks; keep first occurrence
     seen_hrefs: set[str] = set()
     unique_links = []
     for link in nav_links:
         href = (link.get("href") or "").strip()
-        # Normalize: strip fragment
         href = urldefrag(href)[0] if href else href
         if href and href not in seen_hrefs:
             seen_hrefs.add(href)
@@ -433,20 +443,22 @@ async def check_nav_links(
         [l["href"] for l in unique_links], base_url=base_url
     )
 
-    broken = [
-        {"href": l["href"], "text": l.get("text", ""), "status_code": statuses.get(l["href"], 0)}
-        for l in unique_links
-        if _is_broken(statuses.get(l["href"], 0))
-    ]
+    broken: list[dict] = []
+    all_checked: list[dict] = []
+    for l in unique_links:
+        sc = statuses.get(l["href"], 0)
+        ok = not _is_broken(sc)
+        all_checked.append({"href": l["href"], "text": l.get("text", ""), "status_code": sc, "ok": ok})
+        if not ok:
+            broken.append({"href": l["href"], "text": l.get("text", ""), "status_code": sc})
 
-    # Duplicate detection: URLs appearing more than once across all nav elements
     duplicates = [
         {"href": l.get("href"), "text": l.get("text", ""), "occurrences": l.get("occurrences", 1)}
         for l in nav_links
         if (l.get("occurrences") or 1) > 1
     ]
 
-    return broken, duplicates
+    return broken, duplicates, all_checked
 
 
 # --------------------------------------------------------------------------- #
@@ -489,15 +501,16 @@ def check_header_logo(logo_info: dict, base_url: str) -> dict:
 
 async def check_social_media_links(
     social_links: list[dict],
-) -> tuple[list[dict], list[dict]]:
+) -> tuple[list[dict], list[dict], list[dict]]:
     """Check social media links for broken URLs and missing target='_blank'.
 
-    Returns (broken_links, no_new_tab_links).
-    broken_links: [{href, platform, status_code}]
-    no_new_tab_links: [{href, platform, text}]
+    Returns (broken_links, no_new_tab_links, all_checked).
+    broken_links:    [{href, platform, status_code}]
+    no_new_tab_links:[{href, platform, text}]
+    all_checked:     [{href, platform, status_code, ok, opens_new_tab}]
     """
     if not social_links:
-        return [], []
+        return [], [], []
 
     seen: set[str] = set()
     unique = []
@@ -509,19 +522,24 @@ async def check_social_media_links(
 
     statuses = await _check_url_statuses([l["href"] for l in unique])
 
-    broken = []
-    no_new_tab = []
+    broken: list[dict] = []
+    no_new_tab: list[dict] = []
+    all_checked: list[dict] = []
 
     for link in unique:
         href = link["href"]
         sc = statuses.get(href, 0)
-        if _is_broken(sc):
+        ok = not _is_broken(sc)
+        all_checked.append({
+            "href": href,
+            "platform": link.get("platform", ""),
+            "status_code": sc,
+            "ok": ok,
+            "opens_new_tab": link.get("opens_new_tab", False),
+        })
+        if not ok:
             broken.append({"href": href, "platform": link.get("platform", ""), "status_code": sc})
         if not link.get("opens_new_tab"):
-            no_new_tab.append({
-                "href": href,
-                "platform": link.get("platform", ""),
-                "text": link.get("text", ""),
-            })
+            no_new_tab.append({"href": href, "platform": link.get("platform", ""), "text": link.get("text", "")})
 
-    return broken, no_new_tab
+    return broken, no_new_tab, all_checked

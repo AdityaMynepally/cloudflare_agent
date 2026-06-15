@@ -661,6 +661,66 @@
     .hpc-badge.info { background: var(--blue); }
     .hpc-ok-msg { color: var(--green); font-size: 0.68rem; padding-left: 25px; margin-top: 2px; }
 
+    /* Checked-URL accordion */
+    .hpc-checked {
+      padding-left: 25px;
+      margin-top: 6px;
+    }
+    .hpc-checked summary {
+      font-size: 0.65rem;
+      color: #555;
+      cursor: pointer;
+      user-select: none;
+      list-style: none;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      padding: 2px 0;
+    }
+    .hpc-checked summary::-webkit-details-marker { display: none; }
+    .hpc-checked summary::before {
+      content: '▶';
+      font-size: 0.55rem;
+      color: #444;
+      transition: transform .15s;
+    }
+    .hpc-checked[open] summary::before { transform: rotate(90deg); }
+    .hpc-checked summary:hover { color: #888; }
+    .hpc-url-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 5px;
+      font-size: 0.65rem;
+    }
+    .hpc-url-table td {
+      padding: 3px 4px;
+      border-bottom: 1px solid #1c1c1c;
+      color: #999;
+      max-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      vertical-align: middle;
+    }
+    .hpc-url-table td:first-child { width: 24px; padding-right: 0; }
+    .hpc-url-table td:nth-child(2) { width: 36px; }
+    .hpc-url-table td.url-cell     { width: 99%; color: #777; }
+    .hpc-url-table tr:last-child td { border-bottom: none; }
+    .hpc-url-table tr:hover td { background: #161616; color: #bbb; }
+    .status-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+    .status-dot.ok   { background: var(--green); }
+    .status-dot.err  { background: var(--red); }
+    .sc-pill {
+      display: inline-block;
+      font-size: 0.58rem;
+      padding: 0 4px;
+      border-radius: 3px;
+      font-weight: 700;
+      color: #fff;
+    }
+    .sc-pill.ok  { background: #1a3a2a; color: #4ade80; }
+    .sc-pill.err { background: #3a1a1a; color: #f87171; }
+
     /* ---- Download buttons ---- */
     .download-row {
       display: none;
@@ -1305,26 +1365,29 @@
   /* ---------- Sprint 5: Homepage & Site Checks ---------- */
   function renderHomepageChecks(full) {
     const carouselBroken   = full.carousel_broken_links        || [];
+    const carouselChecked  = full.carousel_checked_links       || [];
     const carouselRel      = full.carousel_link_relevance      || [];
     const ctaBroken        = full.cta_broken_links             || [];
+    const ctaChecked       = full.cta_checked_links            || [];
     const hpImgBroken      = full.homepage_broken_content_images || [];
     const dimDesktop       = full.carousel_dimension_issues_desktop || [];
     const dimMobile        = full.carousel_dimension_issues_mobile  || [];
     const navBroken        = full.nav_broken_links             || [];
+    const navChecked       = full.nav_checked_links            || [];
     const navDupes         = full.nav_duplicate_links          || [];
     const navExpired       = full.nav_expired_dates            || [];
     const logoCheck        = full.header_logo_check            || null;
     const socialBroken     = full.social_media_broken          || [];
     const socialNoTab      = full.social_media_no_new_tab      || [];
+    const socialChecked    = full.social_media_checked         || [];
 
-    // Nothing to show if all empty and no logo check
-    const hasAnyData = carouselBroken.length || carouselRel.length || ctaBroken.length ||
-      hpImgBroken.length || dimDesktop.length || dimMobile.length ||
-      navBroken.length || navDupes.length || navExpired.length ||
-      logoCheck || socialBroken.length || socialNoTab.length;
+    const hasAnyData = carouselChecked.length || ctaChecked.length || navChecked.length ||
+      socialChecked.length || hpImgBroken.length || dimDesktop.length || dimMobile.length ||
+      navExpired.length || logoCheck;
     if (!hasAnyData) return;
 
-    function card(status, title, noteHtml, itemsHtml) {
+    // ---- helpers ----
+    function card(status, title, noteHtml, bodyHtml) {
       const icon = status === 'pass' ? '✓' : status === 'fail' ? '✗' : status === 'warn' ? '!' : '—';
       return `
         <div class="hpc-card ${status}">
@@ -1332,18 +1395,34 @@
             <span class="hpc-icon ${status}">${icon}</span>
             <span class="hpc-title">${title}</span>
           </div>
-          ${noteHtml  ? `<div class="hpc-note">${noteHtml}</div>` : ''}
-          ${itemsHtml ? itemsHtml : ''}
+          ${noteHtml ? `<div class="hpc-note">${noteHtml}</div>` : ''}
+          ${bodyHtml || ''}
         </div>`;
     }
 
-    function okMsg(msg) {
-      return `<div class="hpc-ok-msg">✓ ${msg}</div>`;
+    function itemList(items) {
+      return items.length ? `<ul class="hpc-items">${items.join('')}</ul>` : '';
     }
 
-    function itemList(items) {
-      if (!items.length) return '';
-      return `<ul class="hpc-items">${items.join('')}</ul>`;
+    // Collapsible table of checked URLs — the key new piece
+    function checkedAccordion(rows) {
+      if (!rows.length) return '';
+      const rowsHtml = rows.map(r => {
+        const okCls = r.ok ? 'ok' : 'err';
+        const sc    = r.status_code || (r.ok ? '2xx' : '?');
+        const label = escHtml(r.text || r.slide_text || r.platform || '');
+        const url   = escHtml(truncUrl(r.href || r.src || ''));
+        return `<tr>
+          <td><span class="status-dot ${okCls}"></span></td>
+          <td><span class="sc-pill ${okCls}">${sc}</span></td>
+          <td class="url-cell" title="${escHtml(r.href || '')}">${url}${label ? ` <span style="color:#555">· ${label.substring(0,30)}</span>` : ''}</td>
+        </tr>`;
+      }).join('');
+      return `
+        <details class="hpc-checked">
+          <summary>Checked ${rows.length} URL${rows.length !== 1 ? 's' : ''}</summary>
+          <table class="hpc-url-table"><tbody>${rowsHtml}</tbody></table>
+        </details>`;
     }
 
     let html = '';
@@ -1351,100 +1430,87 @@
     // ---- Group 1: Carousel ----
     html += `<div class="hpc-group-label">Carousel / Slideshow</div><div class="hpc-grid">`;
 
-    // Req 1: Carousel broken links
-    if (carouselBroken.length) {
-      const items = carouselBroken.slice(0, 8).map(l =>
-        `<li><span class="hpc-badge err">${l.status_code}</span>${escHtml(truncUrl(l.href))} <small style="color:#555">${escHtml((l.slide_text||'').substring(0,40))}</small></li>`
-      );
-      html += card('fail', 'Carousel Slide Links — 404 Check',
-        `${carouselBroken.length} slide link(s) returning error`,
-        itemList(items));
-    } else if (carouselRel.length) {
-      html += card('pass', 'Carousel Slide Links — 404 Check',
-        'All carousel links checked — no 404s found', '');
+    // Req 1: Carousel slide links 404
+    if (carouselChecked.length) {
+      const st = carouselBroken.length ? 'fail' : 'pass';
+      const note = carouselBroken.length
+        ? `${carouselBroken.length} slide link(s) returning 404`
+        : 'All slide links load successfully';
+      html += card(st, 'Carousel Slide Links — 404', note, checkedAccordion(carouselChecked));
     }
 
     // Req 2: Carousel link relevance
     const irrelevant = carouselRel.filter(r => r.relevant === false);
-    const unchecked  = carouselRel.filter(r => r.relevant === null);
-    if (irrelevant.length) {
-      const items = irrelevant.slice(0, 6).map(r =>
+    const undetermined = carouselRel.filter(r => r.relevant === null);
+    if (carouselRel.length) {
+      const st = irrelevant.length ? 'warn' : 'pass';
+      const note = irrelevant.length
+        ? `${irrelevant.length} slide(s) may link to unrelated pages`
+        : undetermined.length
+          ? `All identified slides look relevant (${undetermined.length} topic unclear)`
+          : 'All slide links appear topically relevant';
+      const items = irrelevant.slice(0, 5).map(r =>
         `<li><span class="hpc-badge warn">mismatch</span>${escHtml((r.slide_text||'').substring(0,50))} → <small>${escHtml(truncUrl(r.href))}</small></li>`
       );
-      html += card('warn', 'Slide Link Relevance',
-        `${irrelevant.length} slide(s) may link to unrelated pages`,
-        itemList(items));
-    } else if (carouselRel.length) {
-      const note = unchecked.length
-        ? `All matched slides look correct (${unchecked.length} slide(s) couldn't be determined)`
-        : 'All slide links appear topically relevant';
-      html += card('pass', 'Slide Link Relevance', note, '');
+      html += card(st, 'Slide Link Relevance', note, itemList(items));
     }
 
     // Reqs 5 & 6: Slide dimensions
-    const hasDimIssues = dimDesktop.length || dimMobile.length;
-    if (hasDimIssues) {
+    if (dimDesktop.length || dimMobile.length) {
       const parts = [];
-      if (dimDesktop.length) parts.push(`Desktop: ${dimDesktop.length} carousel(s) with inconsistent sizes`);
-      if (dimMobile.length)  parts.push(`Mobile: ${dimMobile.length} carousel(s) with inconsistent sizes`);
-      const items = dimDesktop.slice(0, 4).map(d => {
-        const expected = `${d.expected_width}×${d.expected_height}`;
-        const bad = d.inconsistent_slides.map(s => `${s.width}×${s.height}`).join(', ');
-        return `<li><span class="hpc-badge warn">desktop</span>Expected ${expected} — got: ${bad}</li>`;
-      }).concat(dimMobile.slice(0, 4).map(d => {
-        const expected = `${d.expected_width}×${d.expected_height}`;
-        const bad = d.inconsistent_slides.map(s => `${s.width}×${s.height}`).join(', ');
-        return `<li><span class="hpc-badge info">mobile</span>Expected ${expected} — got: ${bad}</li>`;
-      }));
+      if (dimDesktop.length) parts.push(`${dimDesktop.length} carousel(s) inconsistent on desktop`);
+      if (dimMobile.length)  parts.push(`${dimMobile.length} carousel(s) inconsistent on mobile`);
+      const items = dimDesktop.slice(0, 3).map(d =>
+        `<li><span class="hpc-badge warn">desktop</span>Expected ${d.expected_width}×${d.expected_height} — got: ${d.inconsistent_slides.map(s=>`${s.width}×${s.height}`).join(', ')}</li>`
+      ).concat(dimMobile.slice(0, 3).map(d =>
+        `<li><span class="hpc-badge info">mobile</span>Expected ${d.expected_width}×${d.expected_height} — got: ${d.inconsistent_slides.map(s=>`${s.width}×${s.height}`).join(', ')}</li>`
+      ));
       html += card('fail', 'Slide Dimension Consistency', parts.join(' · '), itemList(items));
-    } else if (carouselRel.length || carouselBroken !== undefined) {
+    } else if (carouselChecked.length) {
       html += card('pass', 'Slide Dimension Consistency', 'All carousel slides are the same size (desktop &amp; mobile)', '');
     }
 
-    html += `</div>`; // end carousel grid
+    html += `</div>`;
 
     // ---- Group 2: Homepage CTAs & Images ----
     html += `<div class="hpc-group-label">Homepage CTAs &amp; Images</div><div class="hpc-grid">`;
 
-    // Req 3: CTA broken links
-    if (ctaBroken.length) {
-      const items = ctaBroken.slice(0, 6).map(l =>
-        `<li><span class="hpc-badge err">${l.status_code}</span>${escHtml(truncUrl(l.href))} ${l.text ? `<small style="color:#555">"${escHtml(l.text.substring(0,30))}"</small>` : ''}</li>`
-      );
-      html += card('fail', 'CTA Button / Banner Links',
-        `${ctaBroken.length} CTA link(s) returning 404`,
-        itemList(items));
+    // Req 3: CTA links
+    if (ctaChecked.length) {
+      const st = ctaBroken.length ? 'fail' : 'pass';
+      const note = ctaBroken.length
+        ? `${ctaBroken.length} CTA link(s) returning 404`
+        : 'All CTA links load successfully';
+      html += card(st, 'CTA Button / Banner Links', note, checkedAccordion(ctaChecked));
     } else {
-      html += card('pass', 'CTA Button / Banner Links', 'All checked CTA links return valid pages', '');
+      html += card('na', 'CTA Button / Banner Links', 'No CTA links detected on homepage', '');
     }
 
     // Req 4: Non-slide broken images
     if (hpImgBroken.length) {
       const items = hpImgBroken.slice(0, 6).map(i =>
-        `<li><span class="hpc-badge err">${i.status_code}</span>${escHtml(truncUrl(i.src))} ${i.alt ? `<small style="color:#555">alt="${escHtml(i.alt.substring(0,25))}"</small>` : ''}</li>`
+        `<li><span class="hpc-badge err">${i.status_code}</span>${escHtml(truncUrl(i.src))}${i.alt ? ` <small style="color:#555">alt="${escHtml(i.alt.substring(0,25))}"</small>` : ''}</li>`
       );
       html += card('fail', 'Homepage Content Images',
-        `${hpImgBroken.length} non-carousel/non-logo image(s) broken`,
-        itemList(items));
+        `${hpImgBroken.length} non-carousel/non-logo image(s) broken`, itemList(items));
     } else {
       html += card('pass', 'Homepage Content Images', 'No broken homepage content images detected', '');
     }
 
-    html += `</div>`; // end cta/images grid
+    html += `</div>`;
 
     // ---- Group 3: Navigation ----
     html += `<div class="hpc-group-label">Navigation</div><div class="hpc-grid">`;
 
-    // Req 8: Nav broken links
-    if (navBroken.length) {
-      const items = navBroken.slice(0, 8).map(l =>
-        `<li><span class="hpc-badge err">${l.status_code}</span>${escHtml(l.text||'')} → <small>${escHtml(truncUrl(l.href))}</small></li>`
-      );
-      html += card('fail', 'Nav Links — 404 Check',
-        `${navBroken.length} navigation link(s) returning 404`,
-        itemList(items));
+    // Req 8: Nav 404 — with checked accordion
+    if (navChecked.length) {
+      const st = navBroken.length ? 'fail' : 'pass';
+      const note = navBroken.length
+        ? `${navBroken.length} nav link(s) returning 404`
+        : 'All navigation links load successfully';
+      html += card(st, 'Nav Links — 404 Check', note, checkedAccordion(navChecked));
     } else {
-      html += card('pass', 'Nav Links — 404 Check', 'All navigation links load successfully', '');
+      html += card('na', 'Nav Links — 404 Check', 'No navigation links detected', '');
     }
 
     // Req 9: Nav duplicates
@@ -1453,25 +1519,23 @@
         `<li><span class="hpc-badge warn">${d.occurrences}×</span>${escHtml(d.text||'')} → <small>${escHtml(truncUrl(d.href))}</small></li>`
       );
       html += card('warn', 'Nav Duplicate URLs',
-        `${navDupes.length} URL(s) appear more than once in the navigation`,
-        itemList(items));
-    } else {
+        `${navDupes.length} URL(s) appear more than once in the navigation`, itemList(items));
+    } else if (navChecked.length) {
       html += card('pass', 'Nav Duplicate URLs', 'No duplicate URLs found in navigation', '');
     }
 
     // Req 7: Expired dates
     if (navExpired.length) {
-      const items = navExpired.slice(0, 6).map(d =>
-        `<li><span class="hpc-badge err">expired</span><b>${escHtml(d.date_str)}</b> — ${escHtml((d.context||'').substring(0,60))} <small style="color:#555">(${escHtml(shortHost(d.source_page||''))})</small></li>`
+      const items = navExpired.slice(0, 5).map(d =>
+        `<li><span class="hpc-badge err">expired</span><b>${escHtml(d.date_str)}</b> — ${escHtml((d.context||'').substring(0,55))} <small style="color:#555">(${escHtml(shortHost(d.source_page||''))})</small></li>`
       );
       html += card('fail', 'Expired Content on Pages',
-        `${navExpired.length} expired date(s) found across audited pages`,
-        itemList(items));
+        `${navExpired.length} expired date(s) found across audited pages`, itemList(items));
     } else {
       html += card('pass', 'Expired Content on Pages', 'No expired offers or dates detected', '');
     }
 
-    html += `</div>`; // end nav grid
+    html += `</div>`;
 
     // ---- Group 4: Site-wide ----
     html += `<div class="hpc-group-label">Site-wide</div><div class="hpc-grid">`;
@@ -1479,38 +1543,31 @@
     // Req 10: Header logo
     if (logoCheck) {
       const st = logoCheck.status === 'pass' ? 'pass' : 'fail';
-      html += card(st, 'Header Logo → Homepage',
-        escHtml(logoCheck.note || ''),
-        logoCheck.href ? `<div class="hpc-note" style="margin-top:2px;"><small>${escHtml(truncUrl(logoCheck.href))}</small></div>` : '');
+      const extra = logoCheck.href
+        ? `<div class="hpc-note" style="margin-top:2px;"><small>${escHtml(truncUrl(logoCheck.href))}</small></div>` : '';
+      html += card(st, 'Header Logo → Homepage', escHtml(logoCheck.note || ''), extra);
     } else {
       html += card('na', 'Header Logo → Homepage', 'Logo check not run', '');
     }
 
-    // Req 11: Social media 404
-    if (socialBroken.length) {
-      const items = socialBroken.slice(0, 6).map(l =>
-        `<li><span class="hpc-badge err">${l.status_code}</span><b>${escHtml(l.platform)}</b> — ${escHtml(truncUrl(l.href))}</li>`
-      );
-      html += card('fail', 'Social Media Links — Live',
-        `${socialBroken.length} social link(s) returning errors`,
-        itemList(items));
-    } else if (full.social_media_broken !== undefined) {
-      html += card('pass', 'Social Media Links — Live', 'All social media links are accessible', '');
+    // Reqs 11 & 12: Social media — combined card with checked accordion
+    if (socialChecked.length) {
+      const st = socialBroken.length ? 'fail' : socialNoTab.length ? 'warn' : 'pass';
+      const parts = [];
+      if (socialBroken.length)  parts.push(`${socialBroken.length} broken link(s)`);
+      if (socialNoTab.length)   parts.push(`${socialNoTab.length} missing target="_blank"`);
+      if (!parts.length)        parts.push('All links live and open in new tab');
+      // Annotate the checked rows with opens_new_tab info for the table
+      const annotatedChecked = socialChecked.map(l => ({
+        ...l,
+        text: l.platform + (l.opens_new_tab ? '' : ' ⚠ no new tab'),
+      }));
+      html += card(st, 'Social Media Links', parts.join(' · '), checkedAccordion(annotatedChecked));
+    } else {
+      html += card('na', 'Social Media Links', 'No social media links detected', '');
     }
 
-    // Req 12: Social media new tab
-    if (socialNoTab.length) {
-      const items = socialNoTab.slice(0, 6).map(l =>
-        `<li><span class="hpc-badge warn">no _blank</span><b>${escHtml(l.platform)}</b> — ${escHtml(truncUrl(l.href))}</li>`
-      );
-      html += card('warn', 'Social Icons — Open in New Tab',
-        `${socialNoTab.length} social link(s) missing target="_blank"`,
-        itemList(items));
-    } else if (full.social_media_no_new_tab !== undefined) {
-      html += card('pass', 'Social Icons — Open in New Tab', 'All social media links open in a new tab', '');
-    }
-
-    html += `</div>`; // end site-wide grid
+    html += `</div>`;
 
     document.getElementById('hp-checks-body').innerHTML = html;
     document.getElementById('hp-checks-section').style.display = 'block';

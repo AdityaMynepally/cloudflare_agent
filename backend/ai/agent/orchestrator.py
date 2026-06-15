@@ -727,11 +727,11 @@ class AuditOrchestrator:
 
             # Run all async checks concurrently
             (
-                carousel_broken,
-                cta_broken,
+                carousel_result,
+                cta_result,
                 homepage_img_broken,
-                nav_broken_and_dupes,
-                social_broken_and_tabs,
+                nav_result,
+                social_result,
             ) = await asyncio.gather(
                 check_carousel_links(carousel_desktop, base_url),
                 check_cta_links(cta_links, base_url),
@@ -740,21 +740,27 @@ class AuditOrchestrator:
                 check_social_media_links(social_links),
             )
 
-            nav_broken, nav_dupes = nav_broken_and_dupes
-            social_broken, social_no_new_tab = social_broken_and_tabs
+            carousel_broken, carousel_checked = carousel_result
+            cta_broken, cta_checked = cta_result
+            nav_broken, nav_dupes, nav_checked = nav_result
+            social_broken, social_no_new_tab, social_checked = social_result
 
             # Synchronous checks
             session.carousel_broken_links = carousel_broken
+            session.carousel_checked_links = carousel_checked
             session.carousel_link_relevance = assess_carousel_relevance(carousel_desktop)
             session.cta_broken_links = cta_broken
+            session.cta_checked_links = cta_checked
             session.homepage_broken_content_images = homepage_img_broken
             session.carousel_dimension_issues_desktop = analyze_slide_dimensions(carousel_desktop)
             session.carousel_dimension_issues_mobile = analyze_slide_dimensions(carousel_mobile)
             session.nav_broken_links = nav_broken
+            session.nav_checked_links = nav_checked
             session.nav_duplicate_links = nav_dupes
             session.header_logo_check = check_header_logo(logo_info, base_url)
             session.social_media_broken = social_broken
             session.social_media_no_new_tab = social_no_new_tab
+            session.social_media_checked = social_checked
 
             summary_parts = []
             if carousel_broken:

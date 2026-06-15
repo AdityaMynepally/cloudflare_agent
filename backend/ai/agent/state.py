@@ -274,17 +274,21 @@ class AuditSession:
     phone_numbers_all: list = field(default_factory=list)
     # Sprint 5 — homepage-specific checks
     carousel_broken_links: list = field(default_factory=list)          # req 1: {href, slide_text, status_code}
+    carousel_checked_links: list = field(default_factory=list)         # req 1: all checked {href, slide_text, status_code, ok}
     carousel_link_relevance: list = field(default_factory=list)        # req 2: {href, slide_text, relevant, reason}
     cta_broken_links: list = field(default_factory=list)               # req 3: {href, text, status_code}
+    cta_checked_links: list = field(default_factory=list)              # req 3: all checked {href, text, status_code, ok}
     homepage_broken_content_images: list = field(default_factory=list) # req 4: {src, alt, status_code}
     carousel_dimension_issues_desktop: list = field(default_factory=list)  # req 5
     carousel_dimension_issues_mobile: list = field(default_factory=list)   # req 6
     nav_expired_dates: list = field(default_factory=list)              # req 7: {date_str, context, source_page}
     nav_broken_links: list = field(default_factory=list)               # req 8: {href, text, status_code}
+    nav_checked_links: list = field(default_factory=list)              # req 8: all checked {href, text, status_code, ok}
     nav_duplicate_links: list = field(default_factory=list)            # req 9: {href, text, occurrences}
     header_logo_check: Optional[dict] = None                           # req 10: {has_link, href, links_to_homepage, status, note}
     social_media_broken: list = field(default_factory=list)            # req 11: {href, platform, status_code}
     social_media_no_new_tab: list = field(default_factory=list)        # req 12: {href, platform, text}
+    social_media_checked: list = field(default_factory=list)           # req 11/12: all checked {href, platform, status_code, ok, opens_new_tab}
     # Sprint 2 — dealership feature detection (aggregated across all pages)
     # Each entry: {detected: bool, provider?: str, evidence: str, source_page: str}
     dealership_features: dict = field(default_factory=lambda: {
@@ -353,17 +357,21 @@ class AuditSession:
             "dealership_features": self.dealership_features,
             # Sprint 5
             "carousel_broken_links": self.carousel_broken_links,
+            "carousel_checked_links": self.carousel_checked_links,
             "carousel_link_relevance": self.carousel_link_relevance,
             "cta_broken_links": self.cta_broken_links,
+            "cta_checked_links": self.cta_checked_links,
             "homepage_broken_content_images": self.homepage_broken_content_images,
             "carousel_dimension_issues_desktop": self.carousel_dimension_issues_desktop,
             "carousel_dimension_issues_mobile": self.carousel_dimension_issues_mobile,
             "nav_expired_dates": self.nav_expired_dates,
             "nav_broken_links": self.nav_broken_links,
+            "nav_checked_links": self.nav_checked_links,
             "nav_duplicate_links": self.nav_duplicate_links,
             "header_logo_check": self.header_logo_check,
             "social_media_broken": self.social_media_broken,
             "social_media_no_new_tab": self.social_media_no_new_tab,
+            "social_media_checked": self.social_media_checked,
         }
         if self.qa_card:
             result["qa_card"] = self.qa_card.to_dict()
