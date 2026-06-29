@@ -36,6 +36,14 @@ from ai.analysis.performance import analyze_performance
 from ai.analysis.links import check_links
 from ai.analysis.images import check_images
 from ai.analysis.gbp import fetch_gbp_data, compare_address, compare_hours
+from ai.analysis.inventory import (
+    categorize_inventory_url,
+    check_inventory_graphic_links,
+    extract_history_reports,
+    verify_history_report_links,
+    build_history_reports_check,
+    extract_model_years,
+)
 from ai.analysis.homepage import (
     check_carousel_links,
     assess_carousel_relevance,
@@ -147,9 +155,11 @@ class AuditOrchestrator:
             # ---- Phase 1.5: INVENTORY + VDP (Dealership sites) ----
             internal_links = discover_result.get("internal_links", [])
             inventory_url = self._find_inventory_url(categorized, internal_links, target_url)
+            preowned_url   = self._find_preowned_url(internal_links, target_url)
             if inventory_url:
                 await self._run_dealership_phase(
-                    bridge, inventory_url, session, emit
+                    bridge, inventory_url, session, emit,
+                    preowned_url=preowned_url,
                 )
 
             # ---- Phase 2: AUDITING (Desktop + Mobile per page) ----
@@ -379,6 +389,19 @@ class AuditOrchestrator:
                 "js_errors_count": len(session.js_errors_all),
                 "dealership_features": session.dealership_features,
                 # Sprint 5 counts
+                # Sprint 6 counts
+                "inventory_page_type": session.inventory_page_type,
+                "vdp_page_type": session.vdp_page_type,
+                "inventory_broken_links_count": len(session.inventory_broken_links),
+                "vdp_broken_links_count": len(session.vdp_broken_links),
+                "inventory_broken_images_count": len(session.inventory_broken_images),
+                "vdp_broken_images_count": len(session.vdp_broken_images),
+                "srp_filter_zero_results_count": len(session.srp_filter_zero_results),
+                "srp_filters_checked": session.srp_filters_checked,
+                "history_reports_check": session.history_reports_check,
+                "model_year_check": session.model_year_check,
+                "inventory_expired_dates_count": len(session.inventory_expired_dates),
+                # Sprint 5 counts
                 "carousel_broken_links_count": len(session.carousel_broken_links),
                 "cta_broken_links_count": len(session.cta_broken_links),
                 "nav_broken_links_count": len(session.nav_broken_links),
@@ -472,6 +495,49 @@ class AuditOrchestrator:
 
         return url_matched or text_matched
 
+    def _find_preowned_url(self, internal_links: list, target_url: str) -> Optional[str]:
+        """Find a used / CPO inventory URL from the site's navigation links.
+
+        Used specifically to discover a pre-owned VDP for history-report and
+        model-year checks, even when the primary inventory URL points to new cars.
+        """
+        PREOWNED_PATH_PATTERNS = [
+            "/used-vehicles", "/used-cars", "/used-car", "/used-inventory",
+            "/pre-owned", "/preowned", "/certified-pre-owned", "/cpo",
+            "/shop-used", "/buy-used",
+        ]
+        PREOWNED_TEXT_KEYWORDS = [
+            "used inventory", "used vehicles", "used cars", "pre-owned",
+            "preowned", "certified pre-owned", "shop used", "browse used",
+            "view used", "our used", "used & certified",
+        ]
+
+        base_host = urlparse(target_url).netloc
+
+        url_matched  = None
+        text_matched = None
+
+        for link in internal_links:
+            href     = link.get("href", "") or ""
+            text     = (link.get("text", "") or "").strip().lower()
+            pathname = (link.get("pathname", "") or "").lower()
+
+            if not href:
+                continue
+            try:
+                if urlparse(href).netloc != base_host:
+                    continue
+            except Exception:
+                continue
+
+            if url_matched is None and any(p in pathname for p in PREOWNED_PATH_PATTERNS):
+                url_matched = href
+
+            if text_matched is None and any(kw in text for kw in PREOWNED_TEXT_KEYWORDS):
+                text_matched = href
+
+        return url_matched or text_matched
+
     def _extract_vehicle_link(
         self, links: list, base_url: str
     ) -> tuple:
@@ -535,15 +601,20 @@ class AuditOrchestrator:
         inventory_url: str,
         session: AuditSession,
         emit,
+        preowned_url: Optional[str] = None,
     ) -> None:
-        """Navigate to inventory page, screenshot it, then click top vehicle -> VDP screenshot."""
+        """Navigate to inventory page, run inventory checks, then click top vehicle -> VDP.
+
+        preowned_url: if set and different from inventory_url, navigate to it specifically
+        to find a used/CPO VDP for history-report and model-year checks.
+        """
         try:
             await emit("progress", f"Navigating to inventory page: {inventory_url}", {
                 "status": "inventory",
                 "inventoryUrl": inventory_url,
             })
 
-            # Navigate to inventory / SRP
+            # --- Step 1: Navigate to SRP / inventory page ---
             try:
                 inv_capture = await bridge.send_with_retry({
                     "type": "audit_page",
@@ -578,18 +649,107 @@ class AuditOrchestrator:
                 "title": inv_title,
             }
 
-            await emit("progress", "Found inventory page, looking for top vehicle...", {
+            # --- Step 2: SRP categorization & analysis ---
+            session.inventory_page_type = categorize_inventory_url(inventory_url)
+            await emit("progress", f"Inventory page type: {session.inventory_page_type}", {
                 "status": "inventory",
                 "inventoryTitle": inv_title,
+                "inventoryType": session.inventory_page_type,
             })
 
-            # Parse vehicle links directly from the captured page data —
-            # no extra round-trip to the extension needed.
-            vehicle_url, vehicle_title = self._extract_vehicle_link(
-                inv_capture.get("links", []), inventory_url
+            inv_links         = inv_capture.get("links", [])
+            inv_graphic_links = inv_capture.get("inventory_graphic_links") or []
+            inv_images        = inv_capture.get("images", [])
+            inv_img_resources = (inv_capture.get("performance_data") or {}).get("imageResources", [])
+            inv_data          = inv_capture.get("inventory_data") or {}
+
+            # Run SRP link + image checks concurrently (non-blocking)
+            srp_link_task = asyncio.create_task(
+                check_inventory_graphic_links(inv_links, inv_graphic_links, inventory_url)
             )
+            srp_img_task = asyncio.create_task(
+                check_images(inv_images, inventory_url, inv_img_resources)
+            )
+
+            # --- Step 3: SRP filter check (extension still on inventory page) ---
+            await emit("progress", "Checking SRP filter controls for zero-result combos...", {
+                "status": "inventory",
+            })
+            try:
+                filter_result = await bridge.send_and_wait({"type": "check_srp_filters"})
+                session.srp_filter_zero_results = filter_result.get("zero_results", [])
+                session.srp_filters_checked     = filter_result.get("filters_checked", 0)
+                session.srp_filter_type         = filter_result.get("filter_type", "none")
+                session.srp_filter_note         = filter_result.get("note", "")
+            except Exception as fe:
+                logger.warning(f"SRP filter check error (non-fatal): {fe}")
+
+            # Collect SRP link/image results
+            inv_broken_links, inv_checked_links = await srp_link_task
+            inv_broken_imgs, _inv_over, _inv_img_issues = await srp_img_task
+            session.inventory_broken_links  = inv_broken_links
+            session.inventory_checked_links = inv_checked_links
+            session.inventory_broken_images = inv_broken_imgs
+
+            # Expired dates on SRP
+            for date_entry in (inv_capture.get("page_dates") or []):
+                session.inventory_expired_dates.append({
+                    **date_entry, "source_page": inventory_url, "page_kind": "srp",
+                })
+
+            # Collect model years from SRP inventory data
+            srp_years = inv_data.get("vehicle_years", [])
+
+            # --- Step 4: Find VDP link ---
+            # If the main SRP is new inventory but a pre-owned URL was found separately,
+            # navigate to the pre-owned page first to find a used VDP.
+            vdp_search_links = inv_links
+            vdp_search_base  = inventory_url
+            preowned_years: list = []
+
+            needs_preowned_nav = (
+                preowned_url
+                and preowned_url != inventory_url
+                and session.inventory_page_type in ("new", "unknown", "mixed")
+            )
+
+            if needs_preowned_nav:
+                await emit("progress", f"Checking pre-owned inventory for VDP: {preowned_url}", {
+                    "status": "inventory",
+                    "preownedUrl": preowned_url,
+                })
+                try:
+                    po_capture = await bridge.send_with_retry({
+                        "type": "audit_page",
+                        "url": preowned_url,
+                    })
+                    if not po_capture.get("error"):
+                        vdp_search_links = po_capture.get("links", [])
+                        vdp_search_base  = preowned_url
+                        preowned_years   = (po_capture.get("inventory_data") or {}).get("vehicle_years", [])
+                        # Collect expired dates from pre-owned SRP
+                        for date_entry in (po_capture.get("page_dates") or []):
+                            session.inventory_expired_dates.append({
+                                **date_entry, "source_page": preowned_url, "page_kind": "srp_preowned",
+                            })
+                except Exception as po_err:
+                    logger.warning(f"Pre-owned SRP navigation failed (non-fatal): {po_err}")
+
+            await emit("progress", "Looking for top vehicle on inventory page...", {
+                "status": "inventory",
+            })
+
+            vehicle_url, vehicle_title = self._extract_vehicle_link(vdp_search_links, vdp_search_base)
+
+            # Fallback: try the original SRP links if the preowned page didn't yield a VDP
+            if not vehicle_url and vdp_search_base != inventory_url:
+                vehicle_url, vehicle_title = self._extract_vehicle_link(inv_links, inventory_url)
+
             if not vehicle_url:
                 logger.info("No vehicle link found in inventory page links — skipping VDP phase")
+                all_years = srp_years + preowned_years
+                if all_years:
+                    session.model_year_check = extract_model_years(all_years, srp_url=vdp_search_base or inventory_url)
                 return
 
             logger.info(f"Found vehicle link: {vehicle_url} ({vehicle_title})")
@@ -599,7 +759,7 @@ class AuditOrchestrator:
                 "vehicleUrl": vehicle_url,
             })
 
-            # Navigate to VDP and capture screenshot
+            # --- Step 5: Navigate to VDP ---
             try:
                 vdp_capture = await bridge.send_with_retry({
                     "type": "audit_page",
@@ -607,10 +767,16 @@ class AuditOrchestrator:
                 })
             except HealingError as e:
                 logger.warning(f"VDP navigation failed: {e}")
+                all_years = srp_years + preowned_years
+                if all_years:
+                    session.model_year_check = extract_model_years(all_years, srp_url=vdp_search_base or inventory_url)
                 return
 
             if vdp_capture.get("error"):
                 logger.warning(f"VDP capture error: {vdp_capture['error']}")
+                all_years = srp_years + preowned_years
+                if all_years:
+                    session.model_year_check = extract_model_years(all_years, srp_url=vdp_search_base or inventory_url)
                 return
 
             vdp_screenshot_b64 = vdp_capture.get("screenshot_base64")
@@ -639,6 +805,85 @@ class AuditOrchestrator:
                 "vdpUrl": vehicle_url,
                 "vdpScreenshotUrl": session.vdp_screenshot.get("screenshot_url"),
             })
+
+            # --- Step 6: VDP categorization & analysis ---
+            session.vdp_page_type = categorize_inventory_url(vehicle_url)
+
+            # If VDP URL is ambiguous, infer from the SRP we navigated from
+            if session.vdp_page_type == 'unknown':
+                if vdp_search_base == preowned_url and preowned_url:
+                    # We found this VDP from the pre-owned SRP — it's pre-owned
+                    session.vdp_page_type = categorize_inventory_url(preowned_url) or 'used'
+                elif session.inventory_page_type in ('used', 'cpo'):
+                    # Main SRP is used/CPO, inherit that context
+                    session.vdp_page_type = session.inventory_page_type
+
+            vdp_links         = vdp_capture.get("links", [])
+            vdp_graphic_links = vdp_capture.get("inventory_graphic_links") or []
+            vdp_images        = vdp_capture.get("images", [])
+            vdp_img_resources = (vdp_capture.get("performance_data") or {}).get("imageResources", [])
+            vdp_data          = vdp_capture.get("inventory_data") or {}
+
+            # VDP link + image checks concurrently
+            vdp_link_task = asyncio.create_task(
+                check_inventory_graphic_links(vdp_links, vdp_graphic_links, vehicle_url)
+            )
+            vdp_img_task = asyncio.create_task(
+                check_images(vdp_images, vehicle_url, vdp_img_resources)
+            )
+
+            # History reports — meaningful for pre-owned VDPs.
+            # Also check if the vdp_capture's inventory_data detected history report widgets.
+            is_preowned = session.vdp_page_type in ("used", "cpo", "mixed")
+            vdp_inv_data_reports = (vdp_capture.get("inventory_data") or {}).get("history_reports", [])
+            raw_reports = extract_history_reports(vdp_links)
+
+            # Merge widget-detected reports with link-detected ones
+            if vdp_inv_data_reports and not raw_reports["found"]:
+                raw_reports = {"found": True, "count": len(vdp_inv_data_reports), "links": vdp_inv_data_reports}
+
+            if raw_reports["found"]:
+                verified = await verify_history_report_links(
+                    [r for r in raw_reports["links"] if r.get("href")]
+                )
+            else:
+                verified = []
+            session.history_reports_check = build_history_reports_check(
+                vdp_links, verified, is_preowned
+            )
+
+            # Expired dates on VDP
+            for date_entry in (vdp_capture.get("page_dates") or []):
+                session.inventory_expired_dates.append({
+                    **date_entry, "source_page": vehicle_url, "page_kind": "vdp",
+                })
+
+            # Model years — combine SRP + pre-owned SRP + VDP years
+            vdp_years = vdp_data.get("vehicle_years", [])
+            all_years = srp_years + preowned_years + vdp_years
+            session.model_year_check = extract_model_years(
+                all_years,
+                srp_url=vdp_search_base or inventory_url,
+            )
+
+            vdp_broken_links, vdp_checked_links = await vdp_link_task
+            vdp_broken_imgs, _vdp_over, _vdp_img_issues = await vdp_img_task
+            session.vdp_broken_links  = vdp_broken_links
+            session.vdp_checked_links = vdp_checked_links
+            session.vdp_broken_images = vdp_broken_imgs
+
+            inv_broken_count = len(session.inventory_broken_links)
+            vdp_broken_count = len(session.vdp_broken_links)
+            hist_found = (session.history_reports_check or {}).get("found", False)
+            outdated_count = len((session.model_year_check or {}).get("outdated", []))
+            await emit("progress",
+                f"Inventory checks complete — "
+                f"{inv_broken_count} SRP broken links, "
+                f"{vdp_broken_count} VDP broken links, "
+                f"history reports {'found' if hist_found else 'not found'}, "
+                f"{outdated_count} outdated model year(s)",
+                {"status": "inventory"},
+            )
 
         except Exception as e:
             logger.warning(f"Dealership phase error (non-fatal): {e}", exc_info=True)

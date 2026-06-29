@@ -1,0 +1,262 @@
+"""Inventory page checks: categorization, broken links/images, history reports, model years."""
+
+import asyncio
+import re
+from datetime import date
+from typing import Optional
+from urllib.parse import urlparse
+
+import httpx
+
+TIMEOUT = 8.0
+CONCURRENT = 10
+
+NEW_URL_PATTERNS = [
+    '/new-vehicles', '/new-cars', '/new-car', '/new-inventory',
+    '/shop-new', '/new-models', '/new-trucks', '/new-suvs',
+]
+USED_URL_PATTERNS = [
+    '/used-vehicles', '/used-cars', '/used-car', '/used-inventory',
+    '/pre-owned', '/preowned', '/shop-used',
+]
+CPO_URL_PATTERNS = [
+    '/certified-pre-owned', '/certified', '/cpo',
+]
+
+HISTORY_PROVIDERS = [
+    # Patterns matched against both href and link text.
+    # Includes internal redirect paths like /dealer-inspire-inventory/autocheck/
+    {'platform': 'Carfax',          'patterns': ['carfax.com', 'carfax.', '/carfax/']},
+    {'platform': 'AutoCheck',       'patterns': ['autocheck.com', '/autocheck/']},
+    {'platform': 'NMVTIS',          'patterns': ['nmvtis.gov', '/nmvtis/']},
+    {'platform': 'Vehicle History', 'patterns': ['vehicle-history', '/history-report/']},
+]
+
+HISTORY_TEXT_KEYWORDS = [
+    'carfax', 'autocheck', 'nmvtis', 'vehicle history', 'history report', 'accident report',
+]
+
+
+def categorize_inventory_url(url: str) -> str:
+    """Classify a URL as new / used / cpo / mixed / unknown."""
+    url_lower = url.lower()
+    has_cpo  = any(p in url_lower for p in CPO_URL_PATTERNS)
+    has_new  = any(p in url_lower for p in NEW_URL_PATTERNS)
+    has_used = any(p in url_lower for p in USED_URL_PATTERNS)
+    if has_cpo:
+        return 'cpo'
+    if has_new and not has_used:
+        return 'new'
+    if has_used and not has_new:
+        return 'used'
+    if has_new and has_used:
+        return 'mixed'
+    # Fallback: check common path segments
+    path = urlparse(url).path.lower()
+    if '/new' in path.split('/'):
+        return 'new'
+    if '/used' in path.split('/'):
+        return 'used'
+    return 'unknown'
+
+
+async def check_inventory_graphic_links(
+    links: list,
+    graphic_links: list,
+    base_url: str,
+) -> tuple[list, list]:
+    """Check inventory graphic / banner links for 404 errors.
+
+    graphic_links: from content script getInventoryGraphicLinks()
+    links: all page links (fallback if graphic_links empty)
+    Returns (broken, checked).
+    """
+    base_host = urlparse(base_url).netloc
+
+    # Prefer explicit graphic links; fall back to all same-domain links
+    candidates = graphic_links if graphic_links else []
+    if not candidates:
+        for link in links:
+            href = link.get('href', '') or ''
+            if not href or href.startswith('#') or href.startswith('javascript:'):
+                continue
+            try:
+                parsed = urlparse(href)
+            except Exception:
+                continue
+            if parsed.netloc and parsed.netloc != base_host:
+                continue
+            path = parsed.path.lower()
+            if any(p in path for p in [
+                '/specials', '/offer', '/promo', '/deal', '/inventory/',
+                '/vehicle/', '/vdp/', '/new/', '/used/', '/certified/',
+            ]):
+                candidates.append(link)
+
+    if not candidates:
+        return [], []
+
+    seen = set()
+    deduped = []
+    for c in candidates:
+        href = c.get('href', '')
+        if href and href not in seen:
+            seen.add(href)
+            deduped.append(c)
+
+    sem = asyncio.Semaphore(CONCURRENT)
+
+    async def _check(link: dict):
+        href = link.get('href', '') or ''
+        text = (link.get('text', '') or '')[:80]
+        async with sem:
+            try:
+                async with httpx.AsyncClient(
+                    timeout=TIMEOUT,
+                    follow_redirects=True,
+                    headers={'User-Agent': 'Mozilla/5.0 (compatible; WebSentinelBot/1.0)'},
+                ) as client:
+                    r = await client.head(href)
+                    if r.status_code in (403, 405):
+                        r = await client.get(href)
+                    ok = r.status_code < 400
+                    return {'href': href, 'text': text, 'status_code': r.status_code, 'ok': ok}
+            except Exception:
+                return {'href': href, 'text': text, 'status_code': None, 'ok': False}
+
+    results = await asyncio.gather(*[_check(l) for l in deduped[:30]])
+    broken = [r for r in results if not r['ok']]
+    return broken, list(results)
+
+
+def extract_history_reports(links: list) -> dict:
+    """Scan page links for vehicle history report links (Carfax, AutoCheck, NMVTIS).
+
+    Matches against href (domain OR internal redirect path like /autocheck/) and
+    link text / aria-label keywords so internal redirect URLs are caught.
+
+    Returns {found, count, links: [{platform, href, text, opens_new_tab}]}
+    """
+    reports = []
+    seen: set = set()
+
+    def _detect_platform(href_lower: str, text_lower: str) -> Optional[str]:
+        for provider in HISTORY_PROVIDERS:
+            if any(p in href_lower for p in provider['patterns']):
+                return provider['platform']
+        # Fall back to text keywords
+        for kw in ['carfax', 'autocheck', 'nmvtis', 'vehicle history', 'history report', 'accident report']:
+            if kw in text_lower:
+                if 'carfax' == kw:           return 'Carfax'
+                if 'autocheck' == kw:         return 'AutoCheck'
+                if 'nmvtis' == kw:            return 'NMVTIS'
+                return 'Vehicle History'
+        return None
+
+    for link in links:
+        original_href = link.get('href', '') or ''
+        href_lower    = original_href.lower()
+        text_lower    = (link.get('text', '') or '').lower()
+
+        if original_href in seen:
+            continue
+
+        platform = _detect_platform(href_lower, text_lower)
+        if platform:
+            seen.add(original_href)
+            reports.append({
+                'platform': platform,
+                'href': original_href,
+                'text': (link.get('text', '') or '')[:80],
+                'opens_new_tab': link.get('opens_new_tab', False),
+            })
+
+    return {'found': bool(reports), 'count': len(reports), 'links': reports}
+
+
+async def verify_history_report_links(reports: list) -> list:
+    """HTTP-verify that history report links are reachable (not 404)."""
+    if not reports:
+        return []
+
+    sem = asyncio.Semaphore(5)
+
+    async def _verify(report: dict):
+        href = report.get('href', '') or ''
+        if not href:
+            return {**report, 'status_code': None, 'ok': False}
+        async with sem:
+            try:
+                async with httpx.AsyncClient(
+                    timeout=TIMEOUT,
+                    follow_redirects=True,
+                    headers={'User-Agent': 'Mozilla/5.0 (compatible; WebSentinelBot/1.0)'},
+                ) as client:
+                    r = await client.head(href)
+                    if r.status_code in (403, 405):
+                        r = await client.get(href)
+                    return {**report, 'status_code': r.status_code, 'ok': r.status_code < 400}
+            except Exception as e:
+                return {**report, 'status_code': None, 'ok': False, 'error': str(e)[:100]}
+
+    return list(await asyncio.gather(*[_verify(r) for r in reports]))
+
+
+def build_history_reports_check(
+    links: list,
+    verified_reports: list,
+    is_preowned: bool,
+) -> dict:
+    """Combine raw and verified history report info into a summary dict."""
+    raw = extract_history_reports(links)
+    return {
+        'is_preowned': is_preowned,
+        'found': raw['found'],
+        'count': raw['count'],
+        'links': verified_reports if verified_reports else raw['links'],
+        'all_work': all(r.get('ok') for r in verified_reports) if verified_reports else None,
+        'all_new_tab': all(r.get('opens_new_tab') for r in raw['links']) if raw['links'] else None,
+        'missing_new_tab': [r for r in raw['links'] if not r.get('opens_new_tab')],
+    }
+
+
+def extract_model_years(
+    vehicle_years: list,
+    current_year: Optional[int] = None,
+    srp_url: Optional[str] = None,
+) -> dict:
+    """Parse and classify model years extracted from inventory pages.
+
+    srp_url: the SRP page URL, stored so the UI can construct ?year=XXXX filter links.
+    Returns {years, outdated, ok, cutoff_year, current_year, srp_url}
+    """
+    if current_year is None:
+        current_year = date.today().year
+
+    cutoff_year = current_year - 3  # year <= cutoff is outdated
+
+    year_counts: dict[int, int] = {}
+    for y in vehicle_years:
+        try:
+            yr = int(y)
+            if 1990 <= yr <= current_year + 2:  # sanity range
+                year_counts[yr] = year_counts.get(yr, 0) + 1
+        except (ValueError, TypeError):
+            pass
+
+    all_years = [
+        {'year': yr, 'count': cnt}
+        for yr, cnt in sorted(year_counts.items(), reverse=True)
+    ]
+    outdated = [y for y in all_years if y['year'] <= cutoff_year]
+    ok_years  = [y for y in all_years if y['year'] >  cutoff_year]
+
+    return {
+        'years': all_years,
+        'outdated': outdated,
+        'ok': ok_years,
+        'current_year': current_year,
+        'cutoff_year': cutoff_year,
+        'has_outdated': bool(outdated),
+        'srp_url': srp_url or '',
+    }

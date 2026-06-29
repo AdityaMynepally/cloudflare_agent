@@ -289,6 +289,22 @@ class AuditSession:
     social_media_broken: list = field(default_factory=list)            # req 11: {href, platform, status_code}
     social_media_no_new_tab: list = field(default_factory=list)        # req 12: {href, platform, text}
     social_media_checked: list = field(default_factory=list)           # req 11/12: all checked {href, platform, status_code, ok, opens_new_tab}
+    # Sprint 6 — Inventory page checks
+    inventory_page_type: str = ""          # new / used / cpo / mixed / unknown
+    vdp_page_type: str = ""                # new / used / cpo / unknown
+    inventory_broken_links: list = field(default_factory=list)    # broken links on SRP
+    inventory_checked_links: list = field(default_factory=list)   # all checked links on SRP
+    vdp_broken_links: list = field(default_factory=list)          # broken links on VDP
+    vdp_checked_links: list = field(default_factory=list)         # all checked links on VDP
+    inventory_broken_images: list = field(default_factory=list)   # broken images on SRP
+    vdp_broken_images: list = field(default_factory=list)         # broken images on VDP
+    srp_filter_zero_results: list = field(default_factory=list)   # filter combos with 0 results
+    srp_filters_checked: int = 0                                  # number of filters tested
+    srp_filter_type: str = "none"                                 # 'select' | 'url_params' | 'none'
+    srp_filter_note: str = ""                                     # human-readable note when url_params
+    history_reports_check: Optional[dict] = None                  # {found, all_work, all_new_tab, links}
+    model_year_check: Optional[dict] = None                       # {outdated, ok, cutoff_year}
+    inventory_expired_dates: list = field(default_factory=list)   # expired dates on inv/VDP pages
     # Sprint 2 — dealership feature detection (aggregated across all pages)
     # Each entry: {detected: bool, provider?: str, evidence: str, source_page: str}
     dealership_features: dict = field(default_factory=lambda: {
@@ -355,6 +371,22 @@ class AuditSession:
             "js_errors_all": self.js_errors_all,
             "page_load_times": self.page_load_times,
             "dealership_features": self.dealership_features,
+            # Sprint 6 — Inventory
+            "inventory_page_type": self.inventory_page_type,
+            "vdp_page_type": self.vdp_page_type,
+            "inventory_broken_links": self.inventory_broken_links,
+            "inventory_checked_links": self.inventory_checked_links,
+            "vdp_broken_links": self.vdp_broken_links,
+            "vdp_checked_links": self.vdp_checked_links,
+            "inventory_broken_images": self.inventory_broken_images,
+            "vdp_broken_images": self.vdp_broken_images,
+            "srp_filter_zero_results": self.srp_filter_zero_results,
+            "srp_filters_checked": self.srp_filters_checked,
+            "srp_filter_type": self.srp_filter_type,
+            "srp_filter_note": self.srp_filter_note,
+            "history_reports_check": self.history_reports_check,
+            "model_year_check": self.model_year_check,
+            "inventory_expired_dates": self.inventory_expired_dates,
             # Sprint 5
             "carousel_broken_links": self.carousel_broken_links,
             "carousel_checked_links": self.carousel_checked_links,

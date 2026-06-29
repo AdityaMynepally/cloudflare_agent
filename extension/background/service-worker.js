@@ -561,6 +561,192 @@ wsClient.onCommand(async (command) => {
       const vehicleInfo = results[0]?.result || {};
       wsClient.sendCaptureResult(vehicleInfo);
     }
+    if (command.type === 'check_srp_filters') {
+      // Detect filter controls on the current SRP page and test for zero-result combos.
+      // Handles both standard <select> filters and URL-parameter / custom widget filters.
+      const tabId = await getOrCreateAgentTab();
+
+      const results = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: async () => {
+          function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+          function getResultCount() {
+            const COUNT_SELS = [
+              '[class*="results-count"]', '[class*="inventory-count"]',
+              '[class*="vehicle-count"]', '[class*="total-results"]',
+              '[class*="result-count"]', '[class*="vehicles-found"]',
+              '[class*="search-count"]', '[class*="listings-count"]',
+            ];
+            for (const sel of COUNT_SELS) {
+              const el = document.querySelector(sel);
+              if (el) {
+                const m = el.textContent.match(/(\d[\d,]*)/);
+                if (m) return parseInt(m[0].replace(/,/g, ''));
+              }
+            }
+            const cards = document.querySelectorAll(
+              '.vehicle-card, .inventory-item, .srp-item, .car-card, ' +
+              '[class*="vehicle-listing"], [class*="inventory-card"], [class*="vehicle-tile"]'
+            );
+            return cards.length || null;
+          }
+
+          // ─── Strategy A: detect standard <select> filter controls ───────────
+          // Exclude selects inside <header>, <footer>, <nav> and tiny utility selects.
+          function isInsideExcluded(el) {
+            let p = el.parentElement;
+            while (p) {
+              const tag = p.tagName.toLowerCase();
+              if (tag === 'header' || tag === 'footer' || tag === 'nav') return true;
+              const cls = (p.className || '').toLowerCase();
+              if (cls.includes('cookie') || cls.includes('gdpr') || cls.includes('language-switcher')) return true;
+              p = p.parentElement;
+            }
+            return false;
+          }
+
+          // Preference: named/id-based inventory selects first, then any visible select
+          const NAMED_SELS = [
+            'select[name*="make" i]', 'select[id*="make" i]',
+            'select[name*="model" i]', 'select[id*="model" i]',
+            'select[name*="year" i]', 'select[id*="year" i]',
+            'select[name*="body" i]', 'select[id*="body" i]',
+            'select[name*="type" i]', 'select[id*="type" i]',
+            'select[name*="trim" i]', 'select[id*="trim" i]',
+            '[class*="filter"] select:not([disabled])',
+            '[class*="search"] select:not([disabled])',
+            '[class*="facet"] select:not([disabled])',
+            '[class*="sidebar"] select:not([disabled])',
+          ];
+
+          const selectFilters = [];
+          const seenEls = new WeakSet();
+
+          for (const sel of NAMED_SELS) {
+            try {
+              for (const el of document.querySelectorAll(sel)) {
+                if (seenEls.has(el) || isInsideExcluded(el)) continue;
+                seenEls.add(el);
+                const opts = Array.from(el.options).filter(o => o.value && o.value.trim() !== '');
+                if (opts.length >= 2) {
+                  selectFilters.push({ el, name: el.name || el.id || el.getAttribute('aria-label') || 'filter', options: opts });
+                  if (selectFilters.length >= 3) break;
+                }
+              }
+            } catch (_) {}
+            if (selectFilters.length >= 3) break;
+          }
+
+          // Fallback: any visible <select> with 3+ options not already captured
+          if (!selectFilters.length) {
+            try {
+              for (const el of document.querySelectorAll('select:not([disabled])')) {
+                if (seenEls.has(el) || isInsideExcluded(el)) continue;
+                seenEls.add(el);
+                const opts = Array.from(el.options).filter(o => o.value && o.value.trim() !== '');
+                if (opts.length >= 3) {
+                  selectFilters.push({ el, name: el.name || el.id || el.getAttribute('aria-label') || 'filter', options: opts });
+                  if (selectFilters.length >= 3) break;
+                }
+              }
+            } catch (_) {}
+          }
+
+          // ─── Strategy B: detect URL-parameter-based filters ─────────────────
+          // These are links (or the current URL) that contain inventory filter query params.
+          // Common patterns: ?make=ford, ?type=used, _dFR[make]=ford, ?category=trucks
+          const FILTER_PARAM_PATTERNS = [
+            /[?&](make|model|year|type|condition|category|body.?style|trim|mileage|price)=/i,
+            /_dFR\[/,                           // Algolia InstantSearch
+            /\[make\]=|%5Bmake%5D=/i,           // bracket-encoded
+            /facet|filter|refinement/i,
+          ];
+
+          let urlParamFiltersDetected = false;
+          const currentUrl = window.location.href;
+          const currentSearch = window.location.search;
+
+          if (FILTER_PARAM_PATTERNS.some(rx => rx.test(currentUrl))) {
+            urlParamFiltersDetected = true;
+          }
+
+          if (!urlParamFiltersDetected) {
+            // Check if filter links exist in the page
+            const anchors = Array.from(document.querySelectorAll('a[href]')).slice(0, 200);
+            const filterLinkCount = anchors.filter(a => {
+              const href = a.getAttribute('href') || '';
+              return FILTER_PARAM_PATTERNS.some(rx => rx.test(href));
+            }).length;
+            if (filterLinkCount >= 3) urlParamFiltersDetected = true;
+          }
+
+          if (!urlParamFiltersDetected) {
+            // Check for Algolia/React widget class names
+            const algoliaEls = document.querySelectorAll(
+              '.ais-RefinementList, .ais-Menu, .ais-HierarchicalMenu, ' +
+              '[class*="refinement-list"], [class*="facet-list"], ' +
+              '[class*="filter-group"], [class*="filter-panel"], ' +
+              '[class*="filter-options"], [data-filter], [data-facet]'
+            );
+            if (algoliaEls.length > 0) urlParamFiltersDetected = true;
+          }
+
+          // ─── Interactive test for <select> filters ───────────────────────────
+          if (!selectFilters.length && !urlParamFiltersDetected) {
+            return { zero_results: [], filters_checked: 0, filter_type: 'none' };
+          }
+
+          if (!selectFilters.length && urlParamFiltersDetected) {
+            // URL-param / custom widget filters exist but can't be tested interactively
+            return {
+              zero_results: [],
+              filters_checked: 0,
+              filter_type: 'url_params',
+              note: 'Filter controls detected (URL-parameter or custom widget style — interactive testing not applicable)',
+            };
+          }
+
+          const zeroResults = [];
+
+          for (const { el, name, options } of selectFilters) {
+            const originalValue = el.value;
+            let tested = 0;
+            for (const opt of options.slice(0, 4)) {
+              if (opt.value === originalValue) continue;
+              el.value = opt.value;
+              el.dispatchEvent(new Event('change', { bubbles: true }));
+              el.dispatchEvent(new Event('input', { bubbles: true }));
+              await sleep(2500);
+              const count = getResultCount();
+              tested++;
+              if (count === 0) {
+                zeroResults.push({
+                  filter: name,
+                  option_value: opt.value,
+                  option_text: opt.textContent.trim().substring(0, 60),
+                  result_count: 0,
+                });
+              }
+            }
+            // Restore original selection
+            el.value = originalValue;
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+            await sleep(1000);
+          }
+
+          return {
+            zero_results: zeroResults,
+            filters_checked: selectFilters.length,
+            filter_type: 'select',
+          };
+        }
+      });
+
+      const filterData = results[0]?.result || { zero_results: [], filters_checked: 0, filter_type: 'none' };
+      wsClient.sendCaptureResult({ type: 'filter_check_result', ...filterData });
+    }
+
     if (command.type === 'fill_contact_form') {
       // Fill visible contact form fields with dummy data (does NOT submit).
       const tabId = await getOrCreateAgentTab();

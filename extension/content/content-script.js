@@ -157,8 +157,224 @@
     return links.map(a => ({
       href: a.href,
       text: (a.innerText || '').trim().substring(0, 100),
-      ariaLabel: (a.getAttribute('aria-label') || '').toLowerCase()
+      ariaLabel: (a.getAttribute('aria-label') || '').toLowerCase(),
+      opens_new_tab: a.getAttribute('target') === '_blank',
     }));
+  }
+
+  // ---- Sprint 6: Inventory graphic / banner links (links wrapping images or in banner areas) ----
+
+  function getInventoryGraphicLinks() {
+    const BANNER_AREAS = [
+      '.banner', '[class*="banner"]', '[class*="promo"]', '[class*="offer"]',
+      '.hero', '[class*="hero"]', '.slider', '[class*="slider"]',
+      '[class*="cta"]', '.special', '[class*="special"]',
+    ];
+    const seen = new Set();
+    const result = [];
+
+    function addLink(a) {
+      const href = a.href || '';
+      if (!href || href.startsWith('javascript:') || href.startsWith('tel:') || href.startsWith('mailto:')) return;
+      if (seen.has(href)) return;
+      seen.add(href);
+      result.push({
+        href,
+        text: (a.getAttribute('aria-label') || a.textContent || '').trim().substring(0, 100),
+      });
+    }
+
+    // Links that directly wrap images
+    for (const a of document.querySelectorAll('a[href]')) {
+      if (a.querySelector('img')) addLink(a);
+    }
+
+    // Links inside banner/promo/offer areas
+    for (const sel of BANNER_AREAS) {
+      try {
+        for (const container of document.querySelectorAll(sel)) {
+          for (const a of container.querySelectorAll('a[href]')) {
+            addLink(a);
+          }
+        }
+      } catch (_) {}
+    }
+
+    return result.slice(0, 40);
+  }
+
+  // ---- Sprint 6: Inventory page data (model years, history reports, filters, type) ----
+
+  function getInventoryData() {
+    const data = {
+      inventory_type: 'unknown',
+      vehicle_years: [],
+      history_reports: [],
+      vehicle_count: 0,
+      filter_controls: [],
+    };
+
+    try {
+      // Classify page type from URL
+      const pathLower = window.location.pathname.toLowerCase();
+      const NEW_PATHS  = ['/new-vehicles', '/new-cars', '/new-car', '/new-inventory', '/new-models'];
+      const USED_PATHS = ['/used-vehicles', '/used-cars', '/used-car', '/used-inventory', '/pre-owned', '/preowned'];
+      const CPO_PATHS  = ['/certified-pre-owned', '/certified', '/cpo'];
+      if (CPO_PATHS.some(p => pathLower.includes(p)))       data.inventory_type = 'cpo';
+      else if (NEW_PATHS.some(p => pathLower.includes(p)))  data.inventory_type = 'new';
+      else if (USED_PATHS.some(p => pathLower.includes(p))) data.inventory_type = 'used';
+      else {
+        const headingText = (document.querySelector('h1,h2') || {}).textContent || '';
+        const ht = headingText.toLowerCase();
+        if (ht.includes('new '))                          data.inventory_type = 'new';
+        else if (ht.includes('used ') || ht.includes('pre-owned')) data.inventory_type = 'used';
+        else if (ht.includes('certified'))                data.inventory_type = 'cpo';
+      }
+
+      // Extract model years from vehicle listing titles
+      const YEAR_RE = /\b(20\d{2}|19[89]\d)\b/g;
+      const TITLE_SELECTORS = [
+        '.vehicle-card h2', '.vehicle-card h3', '.vehicle-card h4',
+        '.inventory-item h2', '.inventory-item h3',
+        '.srp-item h2', '.srp-item h3',
+        '.car-card h2', '.car-card h3',
+        '[class*="vehicle-title"]', '[class*="listing-title"]', '[class*="car-title"]',
+        '[class*="result-title"]', '[data-year]',
+      ];
+      const seenTitles = new Set();
+      for (const sel of TITLE_SELECTORS) {
+        try {
+          for (const el of document.querySelectorAll(sel)) {
+            const text = el.textContent || '';
+            if (seenTitles.has(text)) continue;
+            seenTitles.add(text);
+            YEAR_RE.lastIndex = 0;
+            let m;
+            while ((m = YEAR_RE.exec(text)) !== null) {
+              data.vehicle_years.push(m[0]);
+            }
+          }
+        } catch (_) {}
+      }
+
+      // Also check data-year attributes
+      for (const el of document.querySelectorAll('[data-year]')) {
+        const yr = el.getAttribute('data-year');
+        if (yr && /^\d{4}$/.test(yr)) data.vehicle_years.push(yr);
+      }
+
+      // Fallback: scan h3/h4 with year patterns (VDP title)
+      if (!data.vehicle_years.length) {
+        for (const el of document.querySelectorAll('h1,h2,h3,h4')) {
+          const text = (el.textContent || '').trim();
+          if (text.length > 80) continue;
+          const m = text.match(/\b(20\d{2}|19[89]\d)\b/);
+          if (m) data.vehicle_years.push(m[0]);
+        }
+      }
+
+      // Result count
+      const COUNT_SELS = [
+        '[class*="results-count"]', '[class*="inventory-count"]',
+        '[class*="vehicle-count"]', '[class*="total-results"]',
+        '[class*="result-count"]',
+      ];
+      for (const sel of COUNT_SELS) {
+        try {
+          const el = document.querySelector(sel);
+          if (el) {
+            const numM = el.textContent.match(/(\d+)/);
+            if (numM) { data.vehicle_count = parseInt(numM[0]); break; }
+          }
+        } catch (_) {}
+      }
+
+      // History report links (Carfax, AutoCheck, NMVTIS) — on VDP pages.
+      // Matches: external domains, internal redirect paths like /dealer-inspire-inventory/autocheck/,
+      // link text, aria-label, and image alt/src inside the anchor.
+      const HR_HREF_FRAGMENTS = ['carfax.com', 'autocheck.com', 'nmvtis.gov', '/carfax/', '/autocheck/', '/vehicle-history/', '/history-report/'];
+      const HR_TEXT_KEYWORDS  = ['carfax', 'autocheck', 'vehicle history', 'history report', 'accident report', 'nmvtis'];
+
+      function detectHistoryPlatform(href, text, imgAlt, imgSrc) {
+        const h = href.toLowerCase(), t = text.toLowerCase(), ia = imgAlt.toLowerCase(), is_ = imgSrc.toLowerCase();
+        if (h.includes('carfax')   || t.includes('carfax')     || ia.includes('carfax')    || is_.includes('carfax'))    return 'Carfax';
+        if (h.includes('autocheck')|| t.includes('autocheck')  || ia.includes('autocheck') || is_.includes('autocheck')) return 'AutoCheck';
+        if (h.includes('nmvtis')   || t.includes('nmvtis')     || ia.includes('nmvtis')    || is_.includes('nmvtis'))    return 'NMVTIS';
+        if (t.includes('vehicle history') || t.includes('history report') || t.includes('accident report')) return 'Vehicle History';
+        return null;
+      }
+
+      const seenHrefs = new Set();
+      for (const a of document.querySelectorAll('a[href]')) {
+        const href     = a.href || '';
+        const hrefL    = href.toLowerCase();
+        const text     = (a.textContent || a.getAttribute('aria-label') || '').trim();
+        const img      = a.querySelector('img');
+        const imgAlt   = img ? (img.getAttribute('alt') || '') : '';
+        const imgSrc   = img ? (img.src || '') : '';
+
+        const hrefMatch = HR_HREF_FRAGMENTS.some(p => hrefL.includes(p));
+        const textMatch = HR_TEXT_KEYWORDS.some(p => text.toLowerCase().includes(p) || (a.getAttribute('aria-label') || '').toLowerCase().includes(p));
+        const imgMatch  = img && ['carfax', 'autocheck', 'nmvtis'].some(p => imgAlt.toLowerCase().includes(p) || imgSrc.toLowerCase().includes(p));
+
+        if ((hrefMatch || textMatch || imgMatch) && !seenHrefs.has(href)) {
+          const platform = detectHistoryPlatform(hrefL, text, imgAlt, imgSrc);
+          if (platform) {
+            seenHrefs.add(href);
+            data.history_reports.push({
+              platform,
+              href,
+              text: text.substring(0, 80),
+              opens_new_tab: a.getAttribute('target') === '_blank',
+            });
+          }
+        }
+      }
+      // Fallback: check for embedded widgets (class/img with no parent anchor)
+      if (!data.history_reports.length) {
+        const widget = document.querySelector(
+          '[class*="carfax"], img[src*="carfax"], [class*="autocheck"], img[src*="autocheck"]'
+        );
+        if (widget) {
+          const combined = ((widget.className || '') + (widget.src || '')).toLowerCase();
+          data.history_reports.push({
+            platform: combined.includes('autocheck') ? 'AutoCheck' : 'Carfax',
+            href: null,
+            text: 'Widget detected on page (no link)',
+            opens_new_tab: false,
+          });
+        }
+      }
+
+      // Filter controls on SRP
+      const FILTER_SELS = [
+        'select[name*="make" i]', 'select[name*="model" i]', 'select[name*="year" i]',
+        'select[id*="make" i]', 'select[id*="model" i]', 'select[id*="year" i]',
+        'select[name*="body" i]', 'select[name*="type" i]',
+        '[class*="filter"] select', '[class*="facet"] select',
+      ];
+      const seenFilters = new Set();
+      for (const sel of FILTER_SELS) {
+        try {
+          for (const el of document.querySelectorAll(sel)) {
+            const key = el.name || el.id || sel;
+            if (seenFilters.has(key)) continue;
+            seenFilters.add(key);
+            const options = Array.from(el.options).map(o => ({ value: o.value, text: o.textContent.trim() }));
+            if (options.length > 1) {
+              data.filter_controls.push({
+                name: el.name || el.id || 'filter',
+                type: 'select',
+                option_count: options.length,
+                options: options.slice(0, 15),
+              });
+            }
+          }
+        } catch (_) {}
+      }
+    } catch (_) {}
+
+    return data;
   }
 
   // ---- Images ----
@@ -1029,6 +1245,9 @@
       header_logo_info: getHeaderLogoInfo(),
       social_links: getSocialMediaLinks(),
       page_dates: getExpiredDates(),
+      // Sprint 6 — inventory checks
+      inventory_graphic_links: getInventoryGraphicLinks(),
+      inventory_data: getInventoryData(),
       timestamp: new Date().toISOString()
     };
 

@@ -721,6 +721,100 @@
     .sc-pill.ok  { background: #1a3a2a; color: #4ade80; }
     .sc-pill.err { background: #3a1a1a; color: #f87171; }
 
+    /* ---- Sprint 6: Inventory Checks ---- */
+    #inv-checks-section {
+      display: none;
+      margin-top: 20px;
+    }
+    .inv-header {
+      font-size: 0.82rem;
+      font-weight: 600;
+      color: var(--gray);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 10px;
+    }
+    .inv-group-label {
+      font-size: 0.7rem;
+      font-weight: 700;
+      color: #555;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin: 14px 0 6px;
+    }
+    .inv-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+    .inv-card {
+      background: #111;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 10px 12px;
+    }
+    .inv-card.pass   { border-left: 3px solid var(--green); }
+    .inv-card.fail   { border-left: 3px solid var(--red); }
+    .inv-card.warn   { border-left: 3px solid var(--orange); }
+    .inv-card.na     { border-left: 3px solid #444; opacity: 0.7; }
+    .inv-card.info   { border-left: 3px solid var(--blue); }
+    .inv-card-head {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      margin-bottom: 4px;
+    }
+    .inv-icon { flex-shrink: 0; font-size: 0.85rem; width: 18px; text-align: center; }
+    .inv-icon.pass { color: var(--green); }
+    .inv-icon.fail { color: var(--red); }
+    .inv-icon.warn { color: var(--orange); }
+    .inv-icon.na   { color: #555; }
+    .inv-icon.info { color: var(--blue); }
+    .inv-title {
+      font-size: 0.75rem;
+      font-weight: 600;
+      color: #ccc;
+      line-height: 1.3;
+    }
+    .inv-note {
+      font-size: 0.68rem;
+      color: #777;
+      line-height: 1.4;
+      margin-bottom: 4px;
+      padding-left: 25px;
+    }
+    .inv-items {
+      list-style: none;
+      padding-left: 25px;
+      margin-top: 4px;
+      max-height: 110px;
+      overflow-y: auto;
+    }
+    .inv-items li {
+      font-size: 0.67rem;
+      color: #aaa;
+      border-bottom: 1px solid #1d1d1d;
+      padding: 2px 0;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      line-height: 1.5;
+    }
+    .inv-items li:last-child { border-bottom: none; }
+    .inv-badge {
+      display: inline-block;
+      font-size: 0.6rem;
+      padding: 0 4px;
+      border-radius: 3px;
+      margin-right: 3px;
+      color: #fff;
+    }
+    .inv-badge.err  { background: var(--red); }
+    .inv-badge.warn { background: var(--orange); }
+    .inv-badge.info { background: var(--blue); }
+    .inv-badge.ok   { background: var(--green); }
+    .inv-ok-msg { color: var(--green); font-size: 0.68rem; padding-left: 25px; margin-top: 2px; }
+
     /* ---- Download buttons ---- */
     .download-row {
       display: none;
@@ -870,6 +964,12 @@
       <div id="hp-checks-body"></div>
     </div>
 
+    <!-- Sprint 6: Inventory Checks -->
+    <div id="inv-checks-section">
+      <p class="inv-header">Inventory Page Checks</p>
+      <div id="inv-checks-body"></div>
+    </div>
+
     <!-- Download buttons -->
     <div class="download-row" id="download-row">
       <button class="dl-btn" id="download-pptx">⬇ Download PowerPoint</button>
@@ -967,6 +1067,8 @@
     document.getElementById('features-grid').innerHTML = '';
     document.getElementById('hp-checks-section').style.display = 'none';
     document.getElementById('hp-checks-body').innerHTML = '';
+    document.getElementById('inv-checks-section').style.display = 'none';
+    document.getElementById('inv-checks-body').innerHTML = '';
     setProgress(5);
 
     log(`Starting audit: ${url}`);
@@ -1043,6 +1145,7 @@
       renderPhones(full);
       renderFeatures(full);
       renderHomepageChecks(full);
+      renderInventoryChecks(full);
       downloadRow.style.display = 'flex';
     } catch (e) {
       log(`Could not load results: ${e.message}`, 'err');
@@ -1572,6 +1675,278 @@
 
     document.getElementById('hp-checks-body').innerHTML = html;
     document.getElementById('hp-checks-section').style.display = 'block';
+  }
+
+  /* ---------- Sprint 6: Inventory Checks ---------- */
+  function renderInventoryChecks(full) {
+    const invType          = full.inventory_page_type || '';
+    const vdpType          = full.vdp_page_type || '';
+    const invBrokenLinks   = full.inventory_broken_links   || [];
+    const invCheckedLinks  = full.inventory_checked_links  || [];
+    const vdpBrokenLinks   = full.vdp_broken_links         || [];
+    const vdpCheckedLinks  = full.vdp_checked_links        || [];
+    const invBrokenImages  = full.inventory_broken_images  || [];
+    const vdpBrokenImages  = full.vdp_broken_images        || [];
+    const filterZero       = full.srp_filter_zero_results  || [];
+    const filtersChecked   = full.srp_filters_checked      || 0;
+    const filterType       = full.srp_filter_type          || 'none';
+    const filterNote       = full.srp_filter_note          || '';
+    const histCheck        = full.history_reports_check    || null;
+    const modelYearCheck   = full.model_year_check         || null;
+    const invExpired       = full.inventory_expired_dates  || [];
+    const invScreenshot    = full.inventory_screenshot;
+    const vdpScreenshot    = full.vdp_screenshot;
+
+    // Only show if inventory was discovered
+    const hasInventory = invScreenshot || invType || invCheckedLinks.length ||
+      histCheck || modelYearCheck;
+    if (!hasInventory) return;
+
+    function invCard(status, title, noteHtml, bodyHtml) {
+      const icon = status === 'pass' ? '✓' : status === 'fail' ? '✗' : status === 'warn' ? '!' : status === 'info' ? 'i' : '—';
+      return `
+        <div class="inv-card ${status}">
+          <div class="inv-card-head">
+            <span class="inv-icon ${status}">${icon}</span>
+            <span class="inv-title">${title}</span>
+          </div>
+          ${noteHtml ? `<div class="inv-note">${noteHtml}</div>` : ''}
+          ${bodyHtml || ''}
+        </div>`;
+    }
+
+    function invItemList(items) {
+      return items.length ? `<ul class="inv-items">${items.join('')}</ul>` : '';
+    }
+
+    function typeLabel(t) {
+      if (!t || t === 'unknown') return 'Unknown';
+      if (t === 'new')   return 'New Inventory';
+      if (t === 'used')  return 'Used / Pre-Owned';
+      if (t === 'cpo')   return 'Certified Pre-Owned';
+      if (t === 'mixed') return 'New + Used';
+      return t;
+    }
+
+    let html = '';
+
+    // ---- Group 1: Discovery & Categorization ----
+    html += `<div class="inv-group-label">Inventory Discovery &amp; Categorization</div><div class="inv-grid">`;
+
+    // SRP type
+    const srpNote = invScreenshot
+      ? `Discovered at <a href="${escHtml(invScreenshot.url)}" target="_blank" rel="noopener" style="color:var(--blue)">${escHtml(truncUrl(invScreenshot.url || ''))}</a>`
+      : 'No SRP discovered';
+    html += invCard('info', `SRP Type: ${typeLabel(invType)}`, srpNote, '');
+
+    // VDP type
+    const vdpNote = vdpScreenshot
+      ? `VDP found at <a href="${escHtml(vdpScreenshot.url)}" target="_blank" rel="noopener" style="color:var(--blue)">${escHtml(truncUrl(vdpScreenshot.url || ''))}</a>`
+      : 'No VDP discovered';
+    html += invCard('info', `VDP Type: ${typeLabel(vdpType)}`, vdpNote, '');
+
+    html += `</div>`;
+
+    // ---- Group 2: Inventory Content Health ----
+    html += `<div class="inv-group-label">Inventory Content Health</div><div class="inv-grid">`;
+
+    // SRP broken links
+    if (invCheckedLinks.length) {
+      const st = invBrokenLinks.length ? 'fail' : 'pass';
+      const note = invBrokenLinks.length
+        ? `${invBrokenLinks.length} broken SRP graphic/banner link(s)`
+        : `All ${invCheckedLinks.length} SRP links resolve correctly`;
+      const items = invBrokenLinks.slice(0, 6).map(l =>
+        `<li><span class="inv-badge err">${l.status_code || '?'}</span>${escHtml(truncUrl(l.href))} ${l.text ? `<small style="color:#555">· ${escHtml(l.text.substring(0,30))}</small>` : ''}</li>`
+      );
+      html += invCard(st, 'SRP Graphic / Banner Links', note, invItemList(items));
+    } else {
+      html += invCard('na', 'SRP Graphic / Banner Links', 'No SRP link data available', '');
+    }
+
+    // SRP broken images
+    if (invBrokenImages.length) {
+      const items = invBrokenImages.slice(0, 5).map(i =>
+        `<li><span class="inv-badge err">${i.status_code || '?'}</span>${escHtml(truncUrl(i.src || ''))}</li>`
+      );
+      html += invCard('fail', 'SRP Broken Images',
+        `${invBrokenImages.length} image(s) failed to load on SRP`, invItemList(items));
+    } else if (invCheckedLinks.length) {
+      html += invCard('pass', 'SRP Broken Images', 'No broken images detected on SRP', '');
+    }
+
+    // VDP broken links
+    if (vdpCheckedLinks.length) {
+      const st = vdpBrokenLinks.length ? 'fail' : 'pass';
+      const note = vdpBrokenLinks.length
+        ? `${vdpBrokenLinks.length} broken VDP graphic/banner link(s)`
+        : `All ${vdpCheckedLinks.length} VDP links resolve correctly`;
+      const items = vdpBrokenLinks.slice(0, 6).map(l =>
+        `<li><span class="inv-badge err">${l.status_code || '?'}</span>${escHtml(truncUrl(l.href))}</li>`
+      );
+      html += invCard(st, 'VDP Graphic / Banner Links', note, invItemList(items));
+    } else {
+      html += invCard('na', 'VDP Graphic / Banner Links', 'No VDP link data available', '');
+    }
+
+    // VDP broken images
+    if (vdpBrokenImages.length) {
+      const items = vdpBrokenImages.slice(0, 5).map(i =>
+        `<li><span class="inv-badge err">${i.status_code || '?'}</span>${escHtml(truncUrl(i.src || ''))}</li>`
+      );
+      html += invCard('fail', 'VDP Broken Images',
+        `${vdpBrokenImages.length} image(s) failed to load on VDP`, invItemList(items));
+    } else if (vdpCheckedLinks.length) {
+      html += invCard('pass', 'VDP Broken Images', 'No broken images detected on VDP', '');
+    }
+
+    html += `</div>`;
+
+    // ---- Group 3: SRP Filters ----
+    html += `<div class="inv-group-label">SRP Filter Controls</div><div class="inv-grid">`;
+
+    if (filtersChecked > 0) {
+      const st = filterZero.length ? 'warn' : 'pass';
+      const note = filterZero.length
+        ? `${filterZero.length} filter option(s) returned 0 vehicle results`
+        : `Tested ${filtersChecked} filter(s) — no zero-result combinations found`;
+      const items = filterZero.slice(0, 6).map(f =>
+        `<li><span class="inv-badge warn">0 results</span><b>${escHtml(f.filter)}</b>: ${escHtml(f.option_text)}</li>`
+      );
+      html += invCard(st, 'Filter Options — Zero Results', note, invItemList(items));
+    } else if (filterType === 'url_params') {
+      const msg = filterNote || 'Filter controls detected (URL-parameter / custom widget style — interactive testing not applicable)';
+      html += invCard('info', 'Filter Controls Detected', msg, '');
+    } else {
+      html += invCard('na', 'Filter Options — Zero Results', 'No SRP filter controls detected or filter check not run', '');
+    }
+
+    html += `</div>`;
+
+    // ---- Group 4: History Reports (Pre-Owned VDP) ----
+    html += `<div class="inv-group-label">History Reports (Pre-Owned VDP)</div><div class="inv-grid">`;
+
+    if (histCheck) {
+      const vdpTypeForHist = full.vdp_page_type || 'unknown';
+      if (!histCheck.is_preowned) {
+        const isConfirmedNew = vdpTypeForHist === 'new';
+        const naMsg = isConfirmedNew
+          ? 'VDP is new inventory — history reports not required'
+          : 'Could not confirm pre-owned VDP — history reports check skipped';
+        html += invCard('na', 'History Reports', naMsg, '');
+        html += invCard('na', 'Report Links Work', isConfirmedNew ? 'N/A — new vehicle VDP' : 'N/A — VDP type undetermined', '');
+        html += invCard('na', 'Reports Open in New Tab', isConfirmedNew ? 'N/A — new vehicle VDP' : 'N/A — VDP type undetermined', '');
+      } else {
+        // Found?
+        const foundSt = histCheck.found ? 'pass' : 'fail';
+        const foundNote = histCheck.found
+          ? `${histCheck.count} history report link(s) found on VDP`
+          : 'No Carfax or AutoCheck link found on pre-owned VDP';
+        const foundItems = (histCheck.links || []).slice(0, 4).map(r =>
+          `<li><span class="inv-badge ok">${escHtml(r.platform)}</span>${r.href ? `<a href="${escHtml(r.href)}" target="_blank" rel="noopener" style="color:var(--blue)">${escHtml(truncUrl(r.href))}</a>` : escHtml(r.text || '')}</li>`
+        );
+        html += invCard(foundSt, 'History Reports Present', foundNote, invItemList(foundItems));
+
+        // Links work?
+        if (histCheck.found) {
+          const linksSt = histCheck.all_work === false ? 'fail' : histCheck.all_work === true ? 'pass' : 'na';
+          const linksNote = histCheck.all_work === false
+            ? 'One or more history report links returned errors'
+            : histCheck.all_work === true
+              ? 'All history report links are accessible'
+              : 'Link status not verified';
+          html += invCard(linksSt, 'History Report Links Work', linksNote, '');
+
+          // Open in new tab?
+          const noNewTab = histCheck.missing_new_tab || [];
+          const tabSt = noNewTab.length ? 'warn' : 'pass';
+          const tabNote = noNewTab.length
+            ? `${noNewTab.length} history report link(s) do not open in a new tab`
+            : 'All history report links open in a new tab';
+          const tabItems = noNewTab.slice(0, 4).map(r =>
+            `<li><span class="inv-badge warn">no new tab</span>${escHtml(r.platform)} — ${r.href ? escHtml(truncUrl(r.href)) : escHtml(r.text || '')}</li>`
+          );
+          html += invCard(tabSt, 'History Reports Open in New Tab', tabNote, invItemList(tabItems));
+        } else {
+          html += invCard('na', 'History Report Links Work', 'No links to verify', '');
+          html += invCard('na', 'History Reports Open in New Tab', 'No links found', '');
+        }
+      }
+    } else {
+      html += invCard('na', 'History Reports', 'No VDP captured during audit', '');
+    }
+
+    html += `</div>`;
+
+    // ---- Group 5: Model Years ----
+    html += `<div class="inv-group-label">Inventory Model Years</div><div class="inv-grid">`;
+
+    if (modelYearCheck) {
+      const cutoff  = modelYearCheck.cutoff_year;
+      const outdated = modelYearCheck.outdated || [];
+      const ok = modelYearCheck.ok || [];
+      const srpBase = modelYearCheck.srp_url || '';  // used to build ?year=XXXX links
+
+      function yearFilterUrl(year) {
+        if (!srpBase) return '';
+        // Append ?year=XXXX or &year=XXXX to the SRP URL
+        const sep = srpBase.includes('?') ? '&' : '?';
+        return `${srpBase}${sep}year=${year}`;
+      }
+
+      // Outdated model years
+      const outdatedSt = outdated.length ? 'warn' : 'pass';
+      const outdatedNote = outdated.length
+        ? `${outdated.reduce((s, y) => s + y.count, 0)} vehicle(s) with model year ≤ ${cutoff} (outdated)`
+        : `No outdated model years detected (cutoff: ≤ ${cutoff})`;
+      const outdatedItems = outdated.slice(0, 8).map(y => {
+        const url = yearFilterUrl(y.year);
+        const yearLabel = url
+          ? `<a href="${escHtml(url)}" target="_blank" rel="noopener" title="Browse ${y.year} vehicles" style="color:var(--yellow);font-weight:700;text-decoration:none">${y.year} ↗</a>`
+          : `<span style="font-weight:700">${y.year}</span>`;
+        return `<li><span class="inv-badge warn">${yearLabel}</span>${y.count} vehicle${y.count !== 1 ? 's' : ''}</li>`;
+      });
+      html += invCard(outdatedSt, 'Outdated Model Years', outdatedNote, invItemList(outdatedItems));
+
+      // Current model years
+      const currentNote = ok.length
+        ? `${ok.reduce((s, y) => s + y.count, 0)} vehicle(s) with current model years`
+        : 'No current-year vehicles detected';
+      const currentItems = ok.slice(0, 5).map(y => {
+        const url = yearFilterUrl(y.year);
+        const yearLabel = url
+          ? `<a href="${escHtml(url)}" target="_blank" rel="noopener" title="Browse ${y.year} vehicles" style="color:var(--green);font-weight:700;text-decoration:none">${y.year} ↗</a>`
+          : `<span style="font-weight:700">${y.year}</span>`;
+        return `<li><span class="inv-badge ok">${yearLabel}</span>${y.count} vehicle${y.count !== 1 ? 's' : ''}</li>`;
+      });
+      html += invCard('info', 'Current Model Years', currentNote, invItemList(currentItems));
+    } else {
+      html += invCard('na', 'Model Year Check', 'No inventory data captured', '');
+    }
+
+    html += `</div>`;
+
+    // ---- Group 6: Expired Content on Inventory Pages ----
+    html += `<div class="inv-group-label">Expired Content on Inventory Pages</div><div class="inv-grid">`;
+
+    if (invExpired.length) {
+      const srpExpired = invExpired.filter(d => d.page_kind === 'srp');
+      const vdpExpiredD = invExpired.filter(d => d.page_kind === 'vdp');
+      const items = invExpired.slice(0, 5).map(d => {
+        const badge = d.page_kind === 'vdp' ? '<span class="inv-badge info">VDP</span>' : '<span class="inv-badge warn">SRP</span>';
+        return `<li>${badge}<b>${escHtml(d.date_str)}</b> — ${escHtml((d.context || '').substring(0, 55))}</li>`;
+      });
+      html += invCard('fail', 'Expired Content', `${invExpired.length} expired date(s) found on inventory pages`, invItemList(items));
+    } else if (invCheckedLinks.length || histCheck) {
+      html += invCard('pass', 'Expired Content', 'No expired offers or dates detected on inventory pages', '');
+    } else {
+      html += invCard('na', 'Expired Content', 'Inventory pages not audited', '');
+    }
+
+    html += `</div>`;
+
+    document.getElementById('inv-checks-body').innerHTML = html;
+    document.getElementById('inv-checks-section').style.display = 'block';
   }
 
   function truncUrl(url) {
