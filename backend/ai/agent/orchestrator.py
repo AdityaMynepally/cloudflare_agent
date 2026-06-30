@@ -748,12 +748,12 @@ class AuditOrchestrator:
             def _store_model_years_if_new(years):
                 if session.inventory_page_type in ("new", "mixed", "unknown") and years:
                     session.model_year_check = extract_model_years(
-                        years, srp_url=vdp_search_base or inventory_url
+                        years, srp_url=inventory_url
                     )
 
             if not vehicle_url:
                 logger.info("No vehicle link found in inventory page links — skipping VDP phase")
-                _store_model_years_if_new(srp_years + preowned_years)
+                _store_model_years_if_new(srp_years)  # only new-SRP years
                 return
 
             logger.info(f"Found vehicle link: {vehicle_url} ({vehicle_title})")
@@ -771,12 +771,12 @@ class AuditOrchestrator:
                 })
             except HealingError as e:
                 logger.warning(f"VDP navigation failed: {e}")
-                _store_model_years_if_new(srp_years + preowned_years)
+                _store_model_years_if_new(srp_years)
                 return
 
             if vdp_capture.get("error"):
                 logger.warning(f"VDP capture error: {vdp_capture['error']}")
-                _store_model_years_if_new(srp_years + preowned_years)
+                _store_model_years_if_new(srp_years)
                 return
 
             vdp_screenshot_b64 = vdp_capture.get("screenshot_base64")
@@ -858,13 +858,14 @@ class AuditOrchestrator:
                     **date_entry, "source_page": vehicle_url, "page_kind": "vdp",
                 })
 
-            # Model years — only relevant for new inventory (used lots naturally have old years)
+            # Model years — only relevant for new inventory (used lots naturally have old years).
+            # Use only srp_years from the primary new-inventory SRP; exclude preowned_years
+            # (used-vehicle SRP) and VDP years when the VDP itself is a pre-owned vehicle.
             if session.inventory_page_type in ("new", "mixed", "unknown"):
-                vdp_years = vdp_data.get("vehicle_years", [])
-                all_years = srp_years + preowned_years + vdp_years
+                new_vdp_years = [] if is_preowned else vdp_data.get("vehicle_years", [])
                 session.model_year_check = extract_model_years(
-                    all_years,
-                    srp_url=vdp_search_base or inventory_url,
+                    srp_years + new_vdp_years,
+                    srp_url=inventory_url,
                 )
 
             vdp_broken_links, vdp_checked_links = await vdp_link_task
