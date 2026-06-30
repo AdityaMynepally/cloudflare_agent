@@ -106,6 +106,10 @@ async def check_inventory_graphic_links(
 
     sem = asyncio.Semaphore(CONCURRENT)
 
+    # Only 404 and 410 are truly "broken" — 403 means our bot is blocked but
+    # the page exists; 5xx means server error, not a missing page.
+    BROKEN_STATUSES = {404, 410}
+
     async def _check(link: dict):
         href = link.get('href', '') or ''
         text = (link.get('text', '') or '')[:80]
@@ -117,9 +121,9 @@ async def check_inventory_graphic_links(
                     headers={'User-Agent': 'Mozilla/5.0 (compatible; WebSentinelBot/1.0)'},
                 ) as client:
                     r = await client.head(href)
-                    if r.status_code in (403, 405):
+                    if r.status_code == 405:
                         r = await client.get(href)
-                    ok = r.status_code < 400
+                    ok = r.status_code not in BROKEN_STATUSES
                     return {'href': href, 'text': text, 'status_code': r.status_code, 'ok': ok}
             except Exception:
                 return {'href': href, 'text': text, 'status_code': None, 'ok': False}
@@ -175,10 +179,11 @@ def extract_history_reports(links: list) -> dict:
 
 
 async def verify_history_report_links(reports: list) -> list:
-    """HTTP-verify that history report links are reachable (not 404)."""
+    """HTTP-verify that history report links are reachable (404/410 = broken)."""
     if not reports:
         return []
 
+    BROKEN_STATUSES = {404, 410}
     sem = asyncio.Semaphore(5)
 
     async def _verify(report: dict):
@@ -193,9 +198,10 @@ async def verify_history_report_links(reports: list) -> list:
                     headers={'User-Agent': 'Mozilla/5.0 (compatible; WebSentinelBot/1.0)'},
                 ) as client:
                     r = await client.head(href)
-                    if r.status_code in (403, 405):
+                    if r.status_code == 405:
                         r = await client.get(href)
-                    return {**report, 'status_code': r.status_code, 'ok': r.status_code < 400}
+                    ok = r.status_code not in BROKEN_STATUSES
+                    return {**report, 'status_code': r.status_code, 'ok': ok}
             except Exception as e:
                 return {**report, 'status_code': None, 'ok': False, 'error': str(e)[:100]}
 
@@ -209,6 +215,7 @@ def build_history_reports_check(
 ) -> dict:
     """Combine raw and verified history report info into a summary dict."""
     raw = extract_history_reports(links)
+    broken_links = [r for r in verified_reports if not r.get('ok')]
     return {
         'is_preowned': is_preowned,
         'found': raw['found'],
@@ -217,6 +224,7 @@ def build_history_reports_check(
         'all_work': all(r.get('ok') for r in verified_reports) if verified_reports else None,
         'all_new_tab': all(r.get('opens_new_tab') for r in raw['links']) if raw['links'] else None,
         'missing_new_tab': [r for r in raw['links'] if not r.get('opens_new_tab')],
+        'broken_links': broken_links,
     }
 
 

@@ -1849,13 +1849,17 @@
 
         // Links work?
         if (histCheck.found) {
+          const brokenLinks = histCheck.broken_links || [];
           const linksSt = histCheck.all_work === false ? 'fail' : histCheck.all_work === true ? 'pass' : 'na';
           const linksNote = histCheck.all_work === false
-            ? 'One or more history report links returned errors'
+            ? `${brokenLinks.length} history report link(s) returned errors`
             : histCheck.all_work === true
-              ? 'All history report links are accessible'
+              ? 'All sampled history report links are accessible'
               : 'Link status not verified';
-          html += invCard(linksSt, 'History Report Links Work', linksNote, '');
+          const brokenItems = brokenLinks.slice(0, 4).map(r =>
+            `<li><span class="inv-badge fail">${r.status_code || 'error'}</span><span class="inv-badge warn">${escHtml(r.platform)}</span>${r.href ? `<a href="${escHtml(r.href)}" target="_blank" rel="noopener" style="color:var(--red)">${escHtml(truncUrl(r.href))}</a>` : escHtml(r.text || '')}</li>`
+          );
+          html += invCard(linksSt, 'History Report Links Work', linksNote, invItemList(brokenItems));
 
           // Open in new tab?
           const noNewTab = histCheck.missing_new_tab || [];
@@ -1884,42 +1888,28 @@
     if (modelYearCheck) {
       const cutoff  = modelYearCheck.cutoff_year;
       const outdated = modelYearCheck.outdated || [];
-      const ok = modelYearCheck.ok || [];
-      const srpBase = modelYearCheck.srp_url || '';  // used to build ?year=XXXX links
+      const srpBase = modelYearCheck.srp_url || '';
 
       function yearFilterUrl(year) {
         if (!srpBase) return '';
-        // Append ?year=XXXX or &year=XXXX to the SRP URL
         const sep = srpBase.includes('?') ? '&' : '?';
         return `${srpBase}${sep}year=${year}`;
       }
 
-      // Outdated model years
       const outdatedSt = outdated.length ? 'warn' : 'pass';
       const outdatedNote = outdated.length
-        ? `${outdated.reduce((s, y) => s + y.count, 0)} vehicle(s) with model year ≤ ${cutoff} (outdated)`
+        ? `${outdated.reduce((s, y) => s + y.count, 0)} vehicle(s) with model year ≤ ${cutoff} (outdated) — click year to browse`
         : `No outdated model years detected (cutoff: ≤ ${cutoff})`;
       const outdatedItems = outdated.slice(0, 8).map(y => {
         const url = yearFilterUrl(y.year);
         const yearLabel = url
-          ? `<a href="${escHtml(url)}" target="_blank" rel="noopener" title="Browse ${y.year} vehicles" style="color:var(--yellow);font-weight:700;text-decoration:none">${y.year} ↗</a>`
+          ? `<a href="${escHtml(url)}" target="_blank" rel="noopener" title="Browse ${y.year} inventory" style="color:var(--yellow);font-weight:700;text-decoration:none">${y.year} ↗</a>`
           : `<span style="font-weight:700">${y.year}</span>`;
         return `<li><span class="inv-badge warn">${yearLabel}</span>${y.count} vehicle${y.count !== 1 ? 's' : ''}</li>`;
       });
       html += invCard(outdatedSt, 'Outdated Model Years', outdatedNote, invItemList(outdatedItems));
-
-      // Current model years
-      const currentNote = ok.length
-        ? `${ok.reduce((s, y) => s + y.count, 0)} vehicle(s) with current model years`
-        : 'No current-year vehicles detected';
-      const currentItems = ok.slice(0, 5).map(y => {
-        const url = yearFilterUrl(y.year);
-        const yearLabel = url
-          ? `<a href="${escHtml(url)}" target="_blank" rel="noopener" title="Browse ${y.year} vehicles" style="color:var(--green);font-weight:700;text-decoration:none">${y.year} ↗</a>`
-          : `<span style="font-weight:700">${y.year}</span>`;
-        return `<li><span class="inv-badge ok">${yearLabel}</span>${y.count} vehicle${y.count !== 1 ? 's' : ''}</li>`;
-      });
-      html += invCard('info', 'Current Model Years', currentNote, invItemList(currentItems));
+    } else if (invType === 'used' || invType === 'cpo') {
+      html += invCard('na', 'Model Year Check', 'Skipped for used/CPO inventory — old model years are expected', '');
     } else {
       html += invCard('na', 'Model Year Check', 'No inventory data captured', '');
     }
