@@ -1392,11 +1392,11 @@
     );
 
     fillCard('fc-images', 'fc-images-count', 'fc-images-list', bi, i =>
-      `<li><span class="badge-status">${i.status_code || '?'}</span>${escHtml(i.src || '')} ${i.alt ? `<small style="color:#555">alt="${escHtml(i.alt)}"</small>` : ''}</li>`
+      `<li><span class="badge-status">${i.status_code || '?'}</span><a href="${escHtml(i.src || '')}" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:underline;text-decoration-color:#444">${escHtml(i.src || '')}</a> ${i.alt ? `<small style="color:#555">alt="${escHtml(i.alt)}"</small>` : ''}</li>`
     );
 
     fillCard('fc-oversized', 'fc-oversized-count', 'fc-oversized-list', oi, i =>
-      `<li><span class="badge-size">${i.file_size_kb || '?'} KB</span>${escHtml(i.src || '')}</li>`
+      `<li><span class="badge-size">${i.file_size_kb || '?'} KB</span><a href="${escHtml(i.src || '')}" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:underline;text-decoration-color:#444">${escHtml(i.src || '')}</a></li>`
     );
 
     fillCard('fc-jserrors', 'fc-jserrors-count', 'fc-jserrors-list', je, e =>
@@ -1767,7 +1767,7 @@
     // SRP broken images
     if (invBrokenImages.length) {
       const items = invBrokenImages.slice(0, 5).map(i =>
-        `<li><span class="inv-badge err">${i.status_code || '?'}</span>${escHtml(truncUrl(i.src || ''))}</li>`
+        `<li><span class="inv-badge err">${i.status_code || '?'}</span><a href="${escHtml(i.src || '')}" target="_blank" rel="noopener" style="color:var(--blue)">${escHtml(truncUrl(i.src || ''))}</a></li>`
       );
       html += invCard('fail', 'SRP Broken Images',
         `${invBrokenImages.length} image(s) failed to load on SRP`, invItemList(items));
@@ -1792,7 +1792,7 @@
     // VDP broken images
     if (vdpBrokenImages.length) {
       const items = vdpBrokenImages.slice(0, 5).map(i =>
-        `<li><span class="inv-badge err">${i.status_code || '?'}</span>${escHtml(truncUrl(i.src || ''))}</li>`
+        `<li><span class="inv-badge err">${i.status_code || '?'}</span><a href="${escHtml(i.src || '')}" target="_blank" rel="noopener" style="color:var(--blue)">${escHtml(truncUrl(i.src || ''))}</a></li>`
       );
       html += invCard('fail', 'VDP Broken Images',
         `${vdpBrokenImages.length} image(s) failed to load on VDP`, invItemList(items));
@@ -1837,12 +1837,28 @@
         html += invCard('na', 'Report Links Work', isConfirmedNew ? 'N/A — new vehicle VDP' : 'N/A — VDP type undetermined', '');
         html += invCard('na', 'Reports Open in New Tab', isConfirmedNew ? 'N/A — new vehicle VDP' : 'N/A — VDP type undetermined', '');
       } else {
+        // Vehicles checked (up to 4 pre-owned VDPs)
+        const vehiclesChecked = histCheck.vehicles || [];
+        if (vehiclesChecked.length > 1) {
+          const preownedVehicles = vehiclesChecked.filter(v => v.is_preowned);
+          const vehicleItems = preownedVehicles.map(v => {
+            const st = v.found ? 'ok' : 'warn';
+            const label = v.found ? `${v.count} found` : 'none found';
+            const link = v.vdp_url
+              ? `<a href="${escHtml(v.vdp_url)}" target="_blank" rel="noopener" style="color:var(--blue)">${escHtml(truncUrl(v.vdp_url))}</a>`
+              : '';
+            return `<li><span class="inv-badge ${st}">${label}</span>${escHtml(v.vdp_title || 'Vehicle')} — ${link}</li>`;
+          });
+          html += invCard('info', `Vehicles Checked (${preownedVehicles.length})`,
+            `Sampled ${preownedVehicles.length} pre-owned VDP(s) for history reports`, invItemList(vehicleItems));
+        }
+
         // Found?
         const foundSt = histCheck.found ? 'pass' : 'fail';
         const foundNote = histCheck.found
-          ? `${histCheck.count} history report link(s) found on VDP`
-          : 'No Carfax or AutoCheck link found on pre-owned VDP';
-        const foundItems = (histCheck.links || []).slice(0, 4).map(r =>
+          ? `${histCheck.count} history report link(s) found across ${vehiclesChecked.filter(v => v.is_preowned).length || 1} pre-owned VDP(s)`
+          : 'No Carfax or AutoCheck link found on any pre-owned VDP checked';
+        const foundItems = (histCheck.links || []).slice(0, 8).map(r =>
           `<li><span class="inv-badge ok">${escHtml(r.platform)}</span>${r.href ? `<a href="${escHtml(r.href)}" target="_blank" rel="noopener" style="color:var(--blue)">${escHtml(truncUrl(r.href))}</a>` : escHtml(r.text || '')}</li>`
         );
         html += invCard(foundSt, 'History Reports Present', foundNote, invItemList(foundItems));
@@ -1856,7 +1872,7 @@
             : histCheck.all_work === true
               ? 'All sampled history report links are accessible'
               : 'Link status not verified';
-          const brokenItems = brokenLinks.slice(0, 4).map(r =>
+          const brokenItems = brokenLinks.slice(0, 8).map(r =>
             `<li><span class="inv-badge fail">${r.status_code || 'error'}</span><span class="inv-badge warn">${escHtml(r.platform)}</span>${r.href ? `<a href="${escHtml(r.href)}" target="_blank" rel="noopener" style="color:var(--red)">${escHtml(truncUrl(r.href))}</a>` : escHtml(r.text || '')}</li>`
           );
           html += invCard(linksSt, 'History Report Links Work', linksNote, invItemList(brokenItems));
@@ -1867,7 +1883,7 @@
           const tabNote = noNewTab.length
             ? `${noNewTab.length} history report link(s) do not open in a new tab`
             : 'All history report links open in a new tab';
-          const tabItems = noNewTab.slice(0, 4).map(r =>
+          const tabItems = noNewTab.slice(0, 8).map(r =>
             `<li><span class="inv-badge warn">no new tab</span>${escHtml(r.platform)} — ${r.href ? escHtml(truncUrl(r.href)) : escHtml(r.text || '')}</li>`
           );
           html += invCard(tabSt, 'History Reports Open in New Tab', tabNote, invItemList(tabItems));

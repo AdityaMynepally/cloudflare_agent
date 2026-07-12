@@ -15,6 +15,7 @@ Self-healing: the bridge retries failed commands up to 3 times with exponential 
 import asyncio
 import base64
 import logging
+import random
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Coroutine, Optional
@@ -42,6 +43,7 @@ from ai.analysis.inventory import (
     extract_history_reports,
     verify_history_report_links,
     build_history_reports_check,
+    aggregate_history_reports_check,
     extract_model_years,
 )
 from ai.analysis.homepage import (
@@ -78,6 +80,25 @@ INVENTORY_URL_PATTERNS = [
     "/new-cars", "/used-cars", "/new-car", "/used-car",
     "/srp", "/vehicle-search", "/search-results",
     "/certified-pre-owned", "/cpo",
+]
+
+# Number of distinct pre-owned VDPs to check for history-report links.
+HISTORY_REPORT_VEHICLE_TARGET = 4
+# Stop scanning candidate links after this many attempts, even if the target
+# hasn't been reached (avoids a pathological loop on sparsely-linked SRPs).
+HISTORY_REPORT_CANDIDATE_ATTEMPTS = 8
+
+# URL path segments that indicate a VDP (vehicle detail page)
+VDP_PATH_HINTS = [
+    "/inventory/", "/vehicle/", "/vdp/", "/listing/",
+    "/new/", "/used/", "/certified/", "/cars/", "/trucks/", "/suvs/",
+    "/detail/", "/details/",
+]
+# Segments that mean it is NOT a VDP (navigation, filters, etc.)
+NON_VDP_PATH_SEGMENTS = [
+    "/search", "/filter", "/sort", "/compare", "/wishlist",
+    "/contact", "/service", "/about", "/finance", "/blog",
+    "/specials", "/directions", "/hours", "/careers",
 ]
 
 
@@ -551,19 +572,6 @@ class AuditOrchestrator:
 
         base_host = urlparse(base_url).netloc
 
-        # URL path segments that indicate a VDP (vehicle detail page)
-        VDP_PATH_HINTS = [
-            "/inventory/", "/vehicle/", "/vdp/", "/listing/",
-            "/new/", "/used/", "/certified/", "/cars/", "/trucks/", "/suvs/",
-            "/detail/", "/details/",
-        ]
-        # Segments that mean it is NOT a VDP (navigation, filters, etc.)
-        NON_VDP = [
-            "/search", "/filter", "/sort", "/compare", "/wishlist",
-            "/contact", "/service", "/about", "/finance", "/blog",
-            "/specials", "/directions", "/hours", "/careers",
-        ]
-
         best_url = None
         best_title = ""
 
@@ -585,7 +593,7 @@ class AuditOrchestrator:
 
             path = parsed.path.lower()
 
-            if any(x in path for x in NON_VDP):
+            if any(x in path for x in NON_VDP_PATH_SEGMENTS):
                 continue
 
             if any(hint in path for hint in VDP_PATH_HINTS):
@@ -594,6 +602,82 @@ class AuditOrchestrator:
                 break  # take the first match
 
         return best_url, best_title or "Vehicle"
+
+    async def _check_vdp_history_reports(
+        self, capture: dict, vdp_url: str, vdp_title: str, page_type: str
+    ) -> dict:
+        """Extract + verify history-report links for a single VDP capture.
+
+        page_type: result of categorize_inventory_url for this VDP (pass the
+        already-resolved session.vdp_page_type for the primary VDP so its SRP
+        inheritance fallback is respected; computed fresh for extra candidates).
+        """
+        links = capture.get("links", [])
+        is_preowned = page_type in ("used", "cpo", "mixed")
+
+        widget_reports = (capture.get("inventory_data") or {}).get("history_reports", [])
+        raw_reports = extract_history_reports(links)
+        if widget_reports and not raw_reports["found"]:
+            raw_reports = {"found": True, "count": len(widget_reports), "links": widget_reports}
+
+        if is_preowned and raw_reports["found"]:
+            eligible = [r for r in raw_reports["links"] if r.get("href")]
+            sample = random.sample(eligible, min(4, len(eligible)))
+            verified = await verify_history_report_links(sample)
+        else:
+            verified = []
+
+        return build_history_reports_check(
+            links, verified, is_preowned, vdp_url=vdp_url, vdp_title=vdp_title,
+        )
+
+    def _find_preowned_vehicle_links(
+        self, links: list, base_url: str, exclude: set, limit: int
+    ) -> list:
+        """Scan SRP links for additional pre-owned (used/CPO) VDP candidates.
+
+        Filters by URL alone (categorize_inventory_url) so we only spend a page
+        navigation on vehicles that are actually likely to be pre-owned — used
+        for sampling multiple VDPs for the history-report check.
+        Returns up to `limit` (url, title) tuples, excluding anything in `exclude`.
+        """
+        base_host = urlparse(base_url).netloc
+        seen = set(exclude)
+        found = []
+
+        for link in links:
+            if len(found) >= limit:
+                break
+
+            href = link.get("href", "") or ""
+            text = (link.get("text", "") or link.get("ariaLabel", "") or "").strip()
+
+            if not href or href.startswith("#") or href.startswith("javascript:"):
+                continue
+            if href in seen:
+                continue
+
+            try:
+                parsed = urlparse(href)
+            except Exception:
+                continue
+
+            if parsed.netloc and parsed.netloc != base_host:
+                continue
+
+            path = parsed.path.lower()
+            if any(x in path for x in NON_VDP_PATH_SEGMENTS):
+                continue
+            if not any(hint in path for hint in VDP_PATH_HINTS):
+                continue
+
+            if categorize_inventory_url(href) not in ("used", "cpo", "mixed"):
+                continue
+
+            seen.add(href)
+            found.append((href, text[:120] or "Vehicle"))
+
+        return found
 
     async def _run_dealership_phase(
         self,
@@ -832,25 +916,54 @@ class AuditOrchestrator:
                 check_images(vdp_images, vehicle_url, vdp_img_resources)
             )
 
-            # History reports — only meaningful for pre-owned VDPs.
+            # History reports — checked across up to HISTORY_REPORT_VEHICLE_TARGET
+            # distinct pre-owned VDPs, not just the primary one, so a single
+            # vehicle missing/broken links doesn't skew the whole check.
             is_preowned = session.vdp_page_type in ("used", "cpo", "mixed")
-            vdp_inv_data_reports = (vdp_capture.get("inventory_data") or {}).get("history_reports", [])
-            raw_reports = extract_history_reports(vdp_links)
 
-            # Merge widget-detected reports with link-detected ones
-            if vdp_inv_data_reports and not raw_reports["found"]:
-                raw_reports = {"found": True, "count": len(vdp_inv_data_reports), "links": vdp_inv_data_reports}
+            vehicle_checks = [await self._check_vdp_history_reports(
+                vdp_capture, vehicle_url, vdp_title, session.vdp_page_type,
+            )]
+            visited_vdp_urls = {vehicle_url}
 
-            if is_preowned and raw_reports["found"]:
-                import random as _random
-                eligible = [r for r in raw_reports["links"] if r.get("href")]
-                sample   = _random.sample(eligible, min(4, len(eligible)))
-                verified = await verify_history_report_links(sample)
-            else:
-                verified = []
-            session.history_reports_check = build_history_reports_check(
-                vdp_links, verified, is_preowned
-            )
+            remaining = HISTORY_REPORT_VEHICLE_TARGET - 1
+            if remaining > 0:
+                candidate_pool = list(vdp_search_links)
+                if vdp_search_base != inventory_url:
+                    candidate_pool += inv_links
+                candidates = self._find_preowned_vehicle_links(
+                    candidate_pool, vdp_search_base,
+                    exclude=visited_vdp_urls,
+                    limit=HISTORY_REPORT_CANDIDATE_ATTEMPTS,
+                )
+                for cand_url, cand_title in candidates:
+                    if remaining <= 0:
+                        break
+                    if cand_url in visited_vdp_urls:
+                        continue
+                    visited_vdp_urls.add(cand_url)
+                    try:
+                        cand_capture = await bridge.send_with_retry({
+                            "type": "audit_page", "url": cand_url,
+                        })
+                    except HealingError as ce:
+                        logger.warning(f"Extra pre-owned VDP navigation failed (non-fatal): {ce}")
+                        continue
+                    if cand_capture.get("error"):
+                        continue
+
+                    cand_title_final = (
+                        cand_capture.get("metadata", {}).get("title")
+                        or cand_capture.get("seo_data", {}).get("title")
+                        or cand_title
+                    )
+                    cand_page_type = categorize_inventory_url(cand_url)
+                    vehicle_checks.append(await self._check_vdp_history_reports(
+                        cand_capture, cand_url, cand_title_final, cand_page_type,
+                    ))
+                    remaining -= 1
+
+            session.history_reports_check = aggregate_history_reports_check(vehicle_checks)
 
             # Expired dates on VDP
             for date_entry in (vdp_capture.get("page_dates") or []):

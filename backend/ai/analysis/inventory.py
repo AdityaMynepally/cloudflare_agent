@@ -37,12 +37,31 @@ HISTORY_TEXT_KEYWORDS = [
 ]
 
 
+# Many dealer platforms (e.g. Dealer.com) give VDPs a URL like
+# /inventory/used-2022-toyota-highlander-hybrid-xle-awd-...-vin/ — the SRP-level
+# patterns above never match these, so VDPs fall through to "unknown" without this.
+VDP_CONDITION_RE = re.compile(r'/(new|used|certified|cpo)-(?:19|20)\d{2}-')
+
+# Bare inventory hub URLs (e.g. /inventory/, /vehicles/) list both new and used
+# stock with no condition in the path — treat as mixed rather than unknown.
+AGGREGATOR_SEGMENTS = {'inventory', 'vehicles'}
+
+
 def categorize_inventory_url(url: str) -> str:
     """Classify a URL as new / used / cpo / mixed / unknown."""
     url_lower = url.lower()
     has_cpo  = any(p in url_lower for p in CPO_URL_PATTERNS)
     has_new  = any(p in url_lower for p in NEW_URL_PATTERNS)
     has_used = any(p in url_lower for p in USED_URL_PATTERNS)
+
+    if not (has_cpo or has_new or has_used):
+        m = VDP_CONDITION_RE.search(url_lower)
+        if m:
+            condition = m.group(1)
+            has_cpo  = condition in ('certified', 'cpo')
+            has_new  = condition == 'new'
+            has_used = condition == 'used'
+
     if has_cpo:
         return 'cpo'
     if has_new and not has_used:
@@ -51,12 +70,18 @@ def categorize_inventory_url(url: str) -> str:
         return 'used'
     if has_new and has_used:
         return 'mixed'
-    # Fallback: check common path segments
-    path = urlparse(url).path.lower()
-    if '/new' in path.split('/'):
+
+    # Fallback: check exact path segments (e.g. /inventory/new/...)
+    path_segments = urlparse(url).path.lower().strip('/').split('/')
+    if 'new' in path_segments:
         return 'new'
-    if '/used' in path.split('/'):
+    if 'used' in path_segments:
         return 'used'
+
+    # Bare aggregator listing (no condition segment) covers both new & used.
+    if path_segments and path_segments[-1] in AGGREGATOR_SEGMENTS:
+        return 'mixed'
+
     return 'unknown'
 
 
@@ -212,11 +237,15 @@ def build_history_reports_check(
     links: list,
     verified_reports: list,
     is_preowned: bool,
+    vdp_url: str = '',
+    vdp_title: str = '',
 ) -> dict:
-    """Combine raw and verified history report info into a summary dict."""
+    """Combine raw and verified history report info into a summary dict for one VDP."""
     raw = extract_history_reports(links)
     broken_links = [r for r in verified_reports if not r.get('ok')]
     return {
+        'vdp_url': vdp_url,
+        'vdp_title': vdp_title,
         'is_preowned': is_preowned,
         'found': raw['found'],
         'count': raw['count'],
@@ -225,6 +254,41 @@ def build_history_reports_check(
         'all_new_tab': all(r.get('opens_new_tab') for r in raw['links']) if raw['links'] else None,
         'missing_new_tab': [r for r in raw['links'] if not r.get('opens_new_tab')],
         'broken_links': broken_links,
+    }
+
+
+def aggregate_history_reports_check(vehicle_checks: list) -> dict:
+    """Combine per-VDP history-report checks (from build_history_reports_check)
+    across multiple pre-owned vehicles into one summary dict.
+
+    vehicle_checks: one entry per VDP visited, in visit order.
+    """
+    if not vehicle_checks:
+        return {
+            'is_preowned': False, 'found': False, 'count': 0, 'links': [],
+            'all_work': None, 'all_new_tab': None, 'missing_new_tab': [],
+            'broken_links': [], 'vehicles': [], 'vehicles_checked': 0,
+        }
+
+    preowned = [v for v in vehicle_checks if v['is_preowned']]
+
+    all_links       = [l for v in preowned for l in v['links']]
+    all_broken      = [l for v in preowned for l in v['broken_links']]
+    all_missing_tab = [l for v in preowned for l in v['missing_new_tab']]
+    work_flags      = [v['all_work'] for v in preowned if v['all_work'] is not None]
+    tab_flags       = [v['all_new_tab'] for v in preowned if v['all_new_tab'] is not None]
+
+    return {
+        'is_preowned': bool(preowned),
+        'found': any(v['found'] for v in preowned),
+        'count': sum(v['count'] for v in preowned),
+        'links': all_links,
+        'all_work': all(work_flags) if work_flags else None,
+        'all_new_tab': all(tab_flags) if tab_flags else None,
+        'missing_new_tab': all_missing_tab,
+        'broken_links': all_broken,
+        'vehicles': vehicle_checks,
+        'vehicles_checked': len(vehicle_checks),
     }
 
 
