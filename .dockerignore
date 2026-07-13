@@ -1,0 +1,35 @@
+# Virtual environment
+venv/
+env/
+.venv/
+
+# Git
+.git/
+.gitignore
+
+# Secrets — never bake these into an image
+.env
+.env.*
+*.env
+!*.env.example
+
+# Runtime artifacts (regenerated at runtime, not needed in the image)
+results/
+sessions/
+screenshots/
+backend/results/
+backend/screenshots/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+
+# Misc
+.DS_Store
+.idea/
+.vscode/
+.claude/
+node_modules/
