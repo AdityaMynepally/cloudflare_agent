@@ -91,8 +91,9 @@ async def check_images(
                 ) as client:
                     resp = await client.head(src)
 
-                    # HEAD blocked → retry with GET (range request to avoid full download)
-                    if resp.status_code in (403, 405):
+                    # HEAD blocked, or unsupported (some servers 404 on HEAD but
+                    # 200 on GET) → retry with GET (range request to avoid full download)
+                    if resp.status_code in (403, 404, 405):
                         resp = await client.get(
                             src,
                             headers={**_HEADERS, "Range": "bytes=0-4095"},

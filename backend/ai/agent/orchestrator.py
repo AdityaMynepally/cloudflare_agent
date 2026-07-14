@@ -40,6 +40,7 @@ from ai.analysis.gbp import fetch_gbp_data, compare_address, compare_hours
 from ai.analysis.inventory import (
     categorize_inventory_url,
     check_inventory_graphic_links,
+    VDP_CONDITION_RE,
     extract_history_reports,
     verify_history_report_links,
     build_history_reports_check,
@@ -88,7 +89,11 @@ HISTORY_REPORT_VEHICLE_TARGET = 4
 # hasn't been reached (avoids a pathological loop on sparsely-linked SRPs).
 HISTORY_REPORT_CANDIDATE_ATTEMPTS = 8
 
-# URL path segments that indicate a VDP (vehicle detail page)
+# URL path segments that indicate a VDP (vehicle detail page). These alone are
+# NOT sufficient — "/new/", "/cars/" etc. also match body-style/category pages
+# like /new-vehicles/cars/ (all cars) or /new-vehicles/corolla/ (model landing
+# page), which are SRPs, not a specific vehicle. Always pair with
+# _is_likely_vdp_path()'s slug check below.
 VDP_PATH_HINTS = [
     "/inventory/", "/vehicle/", "/vdp/", "/listing/",
     "/new/", "/used/", "/certified/", "/cars/", "/trucks/", "/suvs/",
@@ -100,6 +105,24 @@ NON_VDP_PATH_SEGMENTS = [
     "/contact", "/service", "/about", "/finance", "/blog",
     "/specials", "/directions", "/hours", "/careers",
 ]
+
+
+def _is_likely_vdp_path(path: str) -> bool:
+    """True if `path` looks like an individual vehicle listing, not a category
+    /body-style/model landing page.
+
+    A real VDP slug is always a compound of make/model/trim/VIN joined by
+    hyphens (e.g. "new-2026-toyota-camry-xle-vin" or
+    "new-bloomington-2025-honda-prologue-elite-vin") — at least 3 words. A
+    category page like "/new-vehicles/cars/" or "/new-vehicles/corolla/" has a
+    bare 1-2 word last segment and would otherwise false-match VDP_PATH_HINTS
+    (e.g. "/cars/").
+    """
+    last_segment = path.rstrip("/").rsplit("/", 1)[-1]
+    slug_like = last_segment.count("-") >= 2
+    has_hint = any(hint in path for hint in VDP_PATH_HINTS)
+    has_condition = bool(VDP_CONDITION_RE.search(path))
+    return slug_like and (has_hint or has_condition)
 
 
 import os
@@ -596,7 +619,7 @@ class AuditOrchestrator:
             if any(x in path for x in NON_VDP_PATH_SEGMENTS):
                 continue
 
-            if any(hint in path for hint in VDP_PATH_HINTS):
+            if _is_likely_vdp_path(path):
                 best_url = href
                 best_title = text[:120]
                 break  # take the first match
@@ -668,7 +691,7 @@ class AuditOrchestrator:
             path = parsed.path.lower()
             if any(x in path for x in NON_VDP_PATH_SEGMENTS):
                 continue
-            if not any(hint in path for hint in VDP_PATH_HINTS):
+            if not _is_likely_vdp_path(path):
                 continue
 
             if categorize_inventory_url(href) not in ("used", "cpo", "mixed"):
@@ -791,6 +814,11 @@ class AuditOrchestrator:
             vdp_search_base  = inventory_url
             preowned_years: list = []
 
+            # The discovery-phase link list is capped to 50 and may have missed the
+            # used/pre-owned nav item — re-search using the SRP's own (uncapped) links.
+            if not preowned_url or preowned_url == inventory_url:
+                preowned_url = self._find_preowned_url(inv_links, inventory_url) or preowned_url
+
             needs_preowned_nav = (
                 preowned_url
                 and preowned_url != inventory_url
@@ -816,6 +844,43 @@ class AuditOrchestrator:
                             session.inventory_expired_dates.append({
                                 **date_entry, "source_page": preowned_url, "page_kind": "srp_preowned",
                             })
+
+                        # Surface the pre-owned SRP as its own section (screenshot +
+                        # broken link/image checks) — previously this page was only
+                        # visited to find a used VDP and its own results were discarded.
+                        session.preowned_inventory_page_type = categorize_inventory_url(preowned_url)
+
+                        po_screenshot_b64 = po_capture.get("screenshot_base64")
+                        po_screenshot_path = None
+                        if po_screenshot_b64:
+                            po_screenshot_path = self._save_screenshot(
+                                preowned_url, po_screenshot_b64, ViewportType.DESKTOP
+                            )
+                        po_title = (
+                            po_capture.get("metadata", {}).get("title")
+                            or po_capture.get("seo_data", {}).get("title")
+                            or "Pre-Owned Inventory"
+                        )
+                        session.preowned_inventory_screenshot = {
+                            "screenshot_path": po_screenshot_path,
+                            "screenshot_url": f"/screenshots/{Path(po_screenshot_path).name}" if po_screenshot_path else None,
+                            "url": preowned_url,
+                            "title": po_title,
+                        }
+
+                        po_graphic_links = po_capture.get("inventory_graphic_links") or []
+                        po_images        = po_capture.get("images", [])
+                        po_img_resources = (po_capture.get("performance_data") or {}).get("imageResources", [])
+
+                        po_broken_links, po_checked_links = await check_inventory_graphic_links(
+                            vdp_search_links, po_graphic_links, preowned_url
+                        )
+                        po_broken_imgs, _po_over, _po_img_issues = await check_images(
+                            po_images, preowned_url, po_img_resources
+                        )
+                        session.preowned_inventory_broken_links  = po_broken_links
+                        session.preowned_inventory_checked_links = po_checked_links
+                        session.preowned_inventory_broken_images = po_broken_imgs
                 except Exception as po_err:
                     logger.warning(f"Pre-owned SRP navigation failed (non-fatal): {po_err}")
 

@@ -298,6 +298,13 @@ class AuditSession:
     vdp_checked_links: list = field(default_factory=list)         # all checked links on VDP
     inventory_broken_images: list = field(default_factory=list)   # broken images on SRP
     vdp_broken_images: list = field(default_factory=list)         # broken images on VDP
+    # Pre-owned/used SRP — only populated when the primary SRP is new inventory
+    # and a separate used/CPO inventory page was found and navigated to.
+    preowned_inventory_screenshot: Optional[dict] = None            # {screenshot_path, url, title}
+    preowned_inventory_page_type: str = ""                         # used / cpo / mixed / unknown
+    preowned_inventory_broken_links: list = field(default_factory=list)
+    preowned_inventory_checked_links: list = field(default_factory=list)
+    preowned_inventory_broken_images: list = field(default_factory=list)
     srp_filter_zero_results: list = field(default_factory=list)   # filter combos with 0 results
     srp_filters_checked: int = 0                                  # number of filters tested
     srp_filter_type: str = "none"                                 # 'select' | 'url_params' | 'none'
@@ -380,6 +387,11 @@ class AuditSession:
             "vdp_checked_links": self.vdp_checked_links,
             "inventory_broken_images": self.inventory_broken_images,
             "vdp_broken_images": self.vdp_broken_images,
+            "preowned_inventory_screenshot": self.preowned_inventory_screenshot,
+            "preowned_inventory_page_type": self.preowned_inventory_page_type,
+            "preowned_inventory_broken_links": self.preowned_inventory_broken_links,
+            "preowned_inventory_checked_links": self.preowned_inventory_checked_links,
+            "preowned_inventory_broken_images": self.preowned_inventory_broken_images,
             "srp_filter_zero_results": self.srp_filter_zero_results,
             "srp_filters_checked": self.srp_filters_checked,
             "srp_filter_type": self.srp_filter_type,

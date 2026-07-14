@@ -14,10 +14,12 @@ CONCURRENT = 10
 NEW_URL_PATTERNS = [
     '/new-vehicles', '/new-cars', '/new-car', '/new-inventory',
     '/shop-new', '/new-models', '/new-trucks', '/new-suvs',
+    'searchnew.aspx',  # DealerOn platform
 ]
 USED_URL_PATTERNS = [
     '/used-vehicles', '/used-cars', '/used-car', '/used-inventory',
     '/pre-owned', '/preowned', '/shop-used',
+    'searchused.aspx',  # DealerOn platform
 ]
 CPO_URL_PATTERNS = [
     '/certified-pre-owned', '/certified', '/cpo',
@@ -37,10 +39,13 @@ HISTORY_TEXT_KEYWORDS = [
 ]
 
 
-# Many dealer platforms (e.g. Dealer.com) give VDPs a URL like
-# /inventory/used-2022-toyota-highlander-hybrid-xle-awd-...-vin/ — the SRP-level
-# patterns above never match these, so VDPs fall through to "unknown" without this.
-VDP_CONDITION_RE = re.compile(r'/(new|used|certified|cpo)-(?:19|20)\d{2}-')
+# Many dealer platforms give VDPs a URL with a condition + year baked into the
+# slug — the SRP-level patterns above never match these, so VDPs fall through
+# to "unknown" without this. Two conventions seen in the wild:
+#   Dealer.com: /inventory/used-2022-toyota-highlander-hybrid-xle-awd-...-vin/
+#   DealerOn:   /new-Bloomington-2025-Honda-Prologue-Elite-3GPKHZRJ2SS527873
+# (condition, then an optional 1-2 word city/location segment, then the year)
+VDP_CONDITION_RE = re.compile(r'/(new|used|certified|cpo)-(?:[a-z]+-){0,2}(?:19|20)\d{2}-')
 
 # Bare inventory hub URLs (e.g. /inventory/, /vehicles/) list both new and used
 # stock with no condition in the path — treat as mixed rather than unknown.
@@ -146,7 +151,9 @@ async def check_inventory_graphic_links(
                     headers={'User-Agent': 'Mozilla/5.0 (compatible; WebSentinelBot/1.0)'},
                 ) as client:
                     r = await client.head(href)
-                    if r.status_code == 405:
+                    if r.status_code in (403, 404, 405):
+                        # Some servers (esp. ASP.NET/.aspx pages) 404 on HEAD but
+                        # 200 on GET — confirm before calling it broken.
                         r = await client.get(href)
                     ok = r.status_code not in BROKEN_STATUSES
                     return {'href': href, 'text': text, 'status_code': r.status_code, 'ok': ok}
@@ -223,7 +230,7 @@ async def verify_history_report_links(reports: list) -> list:
                     headers={'User-Agent': 'Mozilla/5.0 (compatible; WebSentinelBot/1.0)'},
                 ) as client:
                     r = await client.head(href)
-                    if r.status_code == 405:
+                    if r.status_code in (403, 404, 405):
                         r = await client.get(href)
                     ok = r.status_code not in BROKEN_STATUSES
                     return {**report, 'status_code': r.status_code, 'ok': ok}
@@ -315,6 +322,17 @@ def extract_model_years(
                 year_counts[yr] = year_counts.get(yr, 0) + 1
         except (ValueError, TypeError):
             pass
+
+    # Extraction scrapes years from page headings and can pick up unrelated
+    # 4-digit numbers (a "Since 2000" trust badge, a stray date elsewhere) when
+    # a site's markup doesn't match the expected vehicle-card selectors. Real
+    # inventory years repeat once per listed vehicle; a scraping artifact shows
+    # up as an isolated singleton. If the data has a genuine cluster (some year
+    # appearing more than once), drop singleton years as unreliable noise —
+    # but only then, since on a small lot every year may legitimately be a
+    # singleton and we have no signal to distinguish that case from noise.
+    if any(cnt > 1 for cnt in year_counts.values()):
+        year_counts = {yr: cnt for yr, cnt in year_counts.items() if cnt > 1}
 
     all_years = [
         {'year': yr, 'count': cnt}

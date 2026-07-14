@@ -1606,13 +1606,13 @@
     // ---- Group 3: Navigation ----
     html += `<div class="hpc-group-label">Navigation</div><div class="hpc-grid">`;
 
-    // Req 8: Nav 404 — with checked accordion
+    // Req 8: Nav 404 — accordion shows only the broken ones
     if (navChecked.length) {
       const st = navBroken.length ? 'fail' : 'pass';
       const note = navBroken.length
-        ? `${navBroken.length} nav link(s) returning 404`
-        : 'All navigation links load successfully';
-      html += card(st, 'Nav Links — 404 Check', note, checkedAccordion(navChecked));
+        ? `${navBroken.length} of ${navChecked.length} nav link(s) returning 404`
+        : `All ${navChecked.length} navigation links load successfully`;
+      html += card(st, 'Nav Links — 404 Check', note, checkedAccordion(navBroken));
     } else {
       html += card('na', 'Nav Links — 404 Check', 'No navigation links detected', '');
     }
@@ -1696,6 +1696,11 @@
     const invExpired       = full.inventory_expired_dates  || [];
     const invScreenshot    = full.inventory_screenshot;
     const vdpScreenshot    = full.vdp_screenshot;
+    const poType           = full.preowned_inventory_page_type    || '';
+    const poScreenshot     = full.preowned_inventory_screenshot;
+    const poBrokenLinks    = full.preowned_inventory_broken_links  || [];
+    const poCheckedLinks   = full.preowned_inventory_checked_links || [];
+    const poBrokenImages   = full.preowned_inventory_broken_images || [];
 
     // Only show if inventory was discovered
     const hasInventory = invScreenshot || invType || invCheckedLinks.length ||
@@ -1745,6 +1750,15 @@
       : 'No VDP discovered';
     html += invCard('info', `VDP Type: ${typeLabel(vdpType)}`, vdpNote, '');
 
+    // Pre-owned/used SRP — only shown when the primary SRP is new and a separate
+    // used/CPO inventory page was found and checked.
+    if (poScreenshot) {
+      const poNote = `Discovered at <a href="${escHtml(poScreenshot.url)}" target="_blank" rel="noopener" style="color:var(--blue)">${escHtml(truncUrl(poScreenshot.url || ''))}</a>`;
+      html += invCard('info', `Pre-Owned SRP Type: ${typeLabel(poType)}`, poNote, '');
+    } else if (invType === 'new' || invType === 'mixed' || invType === 'unknown') {
+      html += invCard('na', 'Pre-Owned SRP Type', 'No separate used/pre-owned inventory page found', '');
+    }
+
     html += `</div>`;
 
     // ---- Group 2: Inventory Content Health ----
@@ -1773,6 +1787,31 @@
         `${invBrokenImages.length} image(s) failed to load on SRP`, invItemList(items));
     } else if (invCheckedLinks.length) {
       html += invCard('pass', 'SRP Broken Images', 'No broken images detected on SRP', '');
+    }
+
+    // Pre-owned SRP broken links
+    if (poCheckedLinks.length) {
+      const st = poBrokenLinks.length ? 'fail' : 'pass';
+      const note = poBrokenLinks.length
+        ? `${poBrokenLinks.length} broken pre-owned SRP graphic/banner link(s)`
+        : `All ${poCheckedLinks.length} pre-owned SRP links resolve correctly`;
+      const items = poBrokenLinks.slice(0, 6).map(l =>
+        `<li><span class="inv-badge err">${l.status_code || '?'}</span>${escHtml(truncUrl(l.href))} ${l.text ? `<small style="color:#555">· ${escHtml(l.text.substring(0,30))}</small>` : ''}</li>`
+      );
+      html += invCard(st, 'Pre-Owned SRP Graphic / Banner Links', note, invItemList(items));
+    } else if (poScreenshot) {
+      html += invCard('na', 'Pre-Owned SRP Graphic / Banner Links', 'No pre-owned SRP link data available', '');
+    }
+
+    // Pre-owned SRP broken images
+    if (poBrokenImages.length) {
+      const items = poBrokenImages.slice(0, 5).map(i =>
+        `<li><span class="inv-badge err">${i.status_code || '?'}</span><a href="${escHtml(i.src || '')}" target="_blank" rel="noopener" style="color:var(--blue)">${escHtml(truncUrl(i.src || ''))}</a></li>`
+      );
+      html += invCard('fail', 'Pre-Owned SRP Broken Images',
+        `${poBrokenImages.length} image(s) failed to load on pre-owned SRP`, invItemList(items));
+    } else if (poScreenshot) {
+      html += invCard('pass', 'Pre-Owned SRP Broken Images', 'No broken images detected on pre-owned SRP', '');
     }
 
     // VDP broken links
@@ -1906,20 +1945,30 @@
       const outdated = modelYearCheck.outdated || [];
       const srpBase = modelYearCheck.srp_url || '';
 
+      // A "?year=XXXX" URL param only works on platforms that support
+      // URL-based filtering — we only have confidence of that when the SRP
+      // filter check (Group 3) detected url_params-style controls. On other
+      // platforms (e.g. dropdown/<select>-based filters), appending a guessed
+      // query param silently does nothing, so link to the plain SRP instead
+      // of implying a working filter.
+      const yearFilterWorks = filterType === 'url_params';
       function yearFilterUrl(year) {
         if (!srpBase) return '';
+        if (!yearFilterWorks) return srpBase;
         const sep = srpBase.includes('?') ? '&' : '?';
         return `${srpBase}${sep}year=${year}`;
       }
 
       const outdatedSt = outdated.length ? 'warn' : 'pass';
       const outdatedNote = outdated.length
-        ? `${outdated.reduce((s, y) => s + y.count, 0)} vehicle(s) with model year ≤ ${cutoff} (outdated) — click year to browse`
+        ? `${outdated.reduce((s, y) => s + y.count, 0)} vehicle(s) with model year ≤ ${cutoff} (outdated)`
+          + (yearFilterWorks ? ' — click year to browse' : '')
         : `No outdated model years detected (cutoff: ≤ ${cutoff})`;
       const outdatedItems = outdated.slice(0, 8).map(y => {
         const url = yearFilterUrl(y.year);
+        const title = yearFilterWorks ? `Browse ${y.year} inventory` : 'View inventory page (year filter not confirmed working on this site)';
         const yearLabel = url
-          ? `<a href="${escHtml(url)}" target="_blank" rel="noopener" title="Browse ${y.year} inventory" style="color:var(--yellow);font-weight:700;text-decoration:none">${y.year} ↗</a>`
+          ? `<a href="${escHtml(url)}" target="_blank" rel="noopener" title="${title}" style="color:var(--yellow);font-weight:700;text-decoration:none">${y.year}${yearFilterWorks ? ' ↗' : ''}</a>`
           : `<span style="font-weight:700">${y.year}</span>`;
         return `<li><span class="inv-badge warn">${yearLabel}</span>${y.count} vehicle${y.count !== 1 ? 's' : ''}</li>`;
       });

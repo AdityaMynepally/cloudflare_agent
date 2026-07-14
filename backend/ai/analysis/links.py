@@ -92,8 +92,9 @@ async def check_links(
                 ) as client:
                     resp = await client.head(url)
 
-                    # HEAD blocked by server → retry with GET
-                    if resp.status_code in (403, 405):
+                    # HEAD blocked or unsupported by server (some ASP.NET / dynamic
+                    # pages 404 on HEAD but 200 on GET) → retry with GET
+                    if resp.status_code in (403, 404, 405):
                         resp = await client.get(url)
 
                     # Only 404 / 410 are definitively broken.

@@ -69,7 +69,10 @@ async def _check_url_statuses(
                     headers=_BROWSER_HEADERS,
                 ) as client:
                     resp = await client.head(url)
-                    if resp.status_code in (403, 405):
+                    if resp.status_code in (403, 404, 405):
+                        # Some servers (esp. ASP.NET/.aspx pages) don't implement
+                        # HEAD correctly and return 404 even though the page exists —
+                        # confirm with GET before calling it broken.
                         resp = await client.get(url)
                     return url, resp.status_code
             except httpx.TimeoutException:
@@ -360,7 +363,7 @@ async def check_homepage_content_images(
                     timeout=timeout, follow_redirects=True, verify=False, headers=_IMG_HEADERS,
                 ) as client:
                     resp = await client.head(src)
-                    if resp.status_code in (403, 405):
+                    if resp.status_code in (403, 404, 405):
                         resp = await client.get(src, headers={**_IMG_HEADERS, "Range": "bytes=0-4095"})
                     if resp.status_code in (404, 410) or resp.status_code >= 500:
                         return {"src": src, "alt": img.get("alt", ""), "status_code": resp.status_code}
