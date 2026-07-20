@@ -838,6 +838,164 @@ wsClient.onCommand(async (command) => {
       });
     }
 
+    if (command.type === 'capture_trade_value') {
+      // Some dealer trade-in widgets (KBB/TradePending/AccuTrade/Edmunds-style)
+      // require entering a vehicle before they reveal a value, often in a modal
+      // overlay. Enter a generic real vehicle, pick the first suggestion if one
+      // appears, then screenshot whatever resulted (modal or otherwise).
+      const tabId = await getOrCreateAgentTab();
+      if (command.url) {
+        await navigateTab(tabId, command.url);
+        await waitForTabLoad(tabId);
+        await sleep(1500);
+      }
+
+      const results = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: async () => {
+          function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+
+          // A modal/overlay may be a same-origin dialog element OR — commonly for
+          // third-party widgets (KBB/TradePending/etc.) — a large cross-origin
+          // <iframe> whose *content* isn't queryable from the top frame at all.
+          // Count large visible candidates of either kind before vs. after the
+          // interaction; an increase means something new appeared on screen.
+          function countModalLikeVisible() {
+            return [...document.querySelectorAll('[role="dialog"], .modal, [class*="modal" i], iframe')]
+              .filter((el) => {
+                const r = el.getBoundingClientRect();
+                const style = window.getComputedStyle(el);
+                return r.width > 300 && r.height > 300 &&
+                       style.display !== 'none' && style.visibility !== 'hidden';
+              }).length;
+          }
+
+          // Some trade-in widgets (e.g. a "#tradeIn" hash route) open their
+          // value-report modal immediately on navigation, before any vehicle
+          // is entered — there's nothing to type into yet, but there IS
+          // something worth screenshotting.
+          if (countModalLikeVisible() > 0) {
+            return { found: true, already_open: true, modal_detected: true };
+          }
+
+          const INPUT_SELECTORS = [
+            'input[placeholder*="year make model" i]',
+            'input[placeholder*="make model" i]',
+            'input[placeholder*="license plate" i]',
+            'input[placeholder*="model" i]',
+            'input[id*="trade" i][type="text"]',
+            'input[class*="trade" i][type="text"]',
+            'input[aria-label*="trade" i]',
+          ];
+          let input = null;
+          for (const sel of INPUT_SELECTORS) {
+            input = document.querySelector(sel);
+            if (input) break;
+          }
+          if (!input) return { found: false };
+
+          const beforeCount = countModalLikeVisible();
+
+          input.scrollIntoView({ block: 'center' });
+          input.focus();
+          const value = '2020 Toyota Camry';
+          input.value = value;
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          input.dispatchEvent(new Event('keyup', { bubbles: true }));
+          await sleep(1500);
+
+          // Match by content, not class names — many of these widgets render
+          // plain unstyled <li>/<a> suggestion rows with no distinguishing class.
+          const typedWords = value.toLowerCase().split(/\s+/).filter(Boolean);
+          const suggestion = [...document.querySelectorAll('li, a, [role="option"], div[data-value], div[onclick]')]
+            .find((el) => {
+              if (el.children.length > 3) return false;
+              const r = el.getBoundingClientRect();
+              if (r.width <= 0 || r.height <= 0) return false;
+              const text = el.textContent.trim();
+              if (!text || text.length > 100) return false;
+              const lower = text.toLowerCase();
+              return typedWords.every((w) => lower.includes(w));
+            }) || null;
+          if (suggestion) {
+            suggestion.click();
+            await sleep(1500);
+          }
+
+          const afterCount = countModalLikeVisible();
+
+          return {
+            found: true,
+            suggestion_clicked: !!suggestion,
+            modal_detected: afterCount > beforeCount,
+          };
+        },
+      });
+
+      const widgetResult = results[0]?.result || { found: false };
+      const screenshot = await captureScreenshot(tabId);
+      wsClient.sendCaptureResult({
+        type: 'trade_value_result',
+        ...widgetResult,
+        screenshot_base64: screenshot,
+      });
+    }
+
+    if (command.type === 'capture_feature_click') {
+      // Generic click-and-screenshot for features whose only trigger is a
+      // javascript:-href or plain <button> (no navigable feature_url) — e.g.
+      // "Schedule Service" / "Order Parts" modals. Re-finds the element by its
+      // visible text (matched at detection time) rather than a CSS selector,
+      // since a fresh navigation means any selector computed earlier no longer
+      // applies to the reloaded DOM.
+      const tabId = await getOrCreateAgentTab();
+      if (command.url) {
+        await navigateTab(tabId, command.url);
+        await waitForTabLoad(tabId);
+        await sleep(1500);
+      }
+
+      const results = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: async (clickText) => {
+          function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+          function countModalLikeVisible() {
+            return [...document.querySelectorAll('[role="dialog"], .modal, [class*="modal" i], iframe')]
+              .filter((el) => {
+                const r = el.getBoundingClientRect();
+                const style = window.getComputedStyle(el);
+                return r.width > 300 && r.height > 300 &&
+                       style.display !== 'none' && style.visibility !== 'hidden';
+              }).length;
+          }
+
+          const target = clickText.trim().toLowerCase();
+          const el = [...document.querySelectorAll('a[href], button, [role="button"]')].find((c) => {
+            const text = (c.textContent || '').trim().replace(/\s+/g, ' ').toLowerCase();
+            return text === target || text.includes(target);
+          });
+          if (!el) return { found: false };
+
+          const beforeCount = countModalLikeVisible();
+          el.scrollIntoView({ block: 'center' });
+          el.click();
+          await sleep(2000);
+          const afterCount = countModalLikeVisible();
+
+          return { found: true, modal_detected: afterCount > beforeCount };
+        },
+        args: [command.clickText || ''],
+      });
+
+      const clickResult = results[0]?.result || { found: false };
+      const screenshot = await captureScreenshot(tabId);
+      wsClient.sendCaptureResult({
+        type: 'feature_click_result',
+        ...clickResult,
+        screenshot_base64: screenshot,
+      });
+    }
+
   } catch (err) {
     console.error('[WS] Command error:', command.type, err);
     wsClient.sendCaptureResult({ error: err.message, command_type: command.type });

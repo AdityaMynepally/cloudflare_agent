@@ -231,7 +231,19 @@
         else if (ht.includes('certified'))                data.inventory_type = 'cpo';
       }
 
-      // Extract model years from vehicle listing titles
+      // Extract model years from vehicle listing titles.
+      // Some component frameworks (seen on Andy Mohr Honda — Vue scoped
+      // components) inline a <style> block as a DIRECT CHILD of the card
+      // element, so plain .textContent pulls in CSS rule text too — and a
+      // stray 4-digit number in there (a hex-ish value, a media-query width,
+      // etc.) gets misread as a model year. Strip style/script descendants
+      // before scanning.
+      function cleanText(el) {
+        const clone = el.cloneNode(true);
+        clone.querySelectorAll('style, script').forEach((s) => s.remove());
+        return clone.textContent || '';
+      }
+
       const YEAR_RE = /\b(20\d{2}|19[89]\d)\b/g;
       const TITLE_SELECTORS = [
         '.vehicle-card h2', '.vehicle-card h3', '.vehicle-card h4',
@@ -239,13 +251,13 @@
         '.srp-item h2', '.srp-item h3',
         '.car-card h2', '.car-card h3',
         '[class*="vehicle-title"]', '[class*="listing-title"]', '[class*="car-title"]',
-        '[class*="result-title"]', '[data-year]',
+        '[class*="result-title"]',
       ];
       const seenTitles = new Set();
       for (const sel of TITLE_SELECTORS) {
         try {
           for (const el of document.querySelectorAll(sel)) {
-            const text = el.textContent || '';
+            const text = cleanText(el);
             if (seenTitles.has(text)) continue;
             seenTitles.add(text);
             YEAR_RE.lastIndex = 0;
@@ -257,7 +269,9 @@
         } catch (_) {}
       }
 
-      // Also check data-year attributes
+      // data-year attribute is an unambiguous signal — read the attribute
+      // value directly rather than scanning the element's (possibly noisy)
+      // textContent.
       for (const el of document.querySelectorAll('[data-year]')) {
         const yr = el.getAttribute('data-year');
         if (yr && /^\d{4}$/.test(yr)) data.vehicle_years.push(yr);
@@ -266,7 +280,7 @@
       // Fallback: scan h3/h4 with year patterns (VDP title)
       if (!data.vehicle_years.length) {
         for (const el of document.querySelectorAll('h1,h2,h3,h4')) {
-          const text = (el.textContent || '').trim();
+          const text = cleanText(el).trim();
           if (text.length > 80) continue;
           const m = text.match(/\b(20\d{2}|19[89]\d)\b/);
           if (m) data.vehicle_years.push(m[0]);
@@ -734,14 +748,55 @@
     const DAY_FULL = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];
 
     // 1. Schema.org JSON-LD — most reliable source
+    //
+    // Dealer sites commonly emit one JSON-LD record PER DEPARTMENT (schema.org
+    // has no single "sales hours" type), e.g. AutoDealer=sales, AutoRepair=
+    // service, AutoPartsStore=parts, AutoBodyShop=body shop — each with its
+    // own openingHoursSpecification. We only ever want sales/dealership hours,
+    // never service/parts/body-shop, so records are classified by @type below.
+    const SALES_TYPE_RE   = /\bautodealer\b/;
+    const EXCLUDE_TYPE_RE = /\b(autorepair|autopartsstore|autobodyshop|autorental|tirerepair|motorcyclerepair)\b/;
+    const GENERIC_TYPE_RE = /\blocalbusiness\b|\bautomotivebusiness\b/;
+    const NAME_ADDR_TYPE_RE = /\blocalbusiness\b|\bautomotivebusiness\b|\bautodealer\b|\bdealer\b|\bstore\b/;
+
+    function parseOpeningHours(item) {
+      const hours = {};
+      if (item.openingHoursSpecification) {
+        for (const spec of [].concat(item.openingHoursSpecification)) {
+          for (const raw of [].concat(spec.dayOfWeek || [])) {
+            const day = raw.replace(/https?:\/\/schema\.org\//i, '');
+            if (day) hours[day] = `${spec.opens || ''}-${spec.closes || ''}`;
+          }
+        }
+      }
+      if (!Object.keys(hours).length && item.openingHours) {
+        for (const oh of [].concat(item.openingHours)) {
+          const m = /^([A-Z][a-z](?:-[A-Z][a-z])?)\s+(\d{2}:\d{2})-(\d{2}:\d{2})/.exec(oh);
+          if (!m) continue;
+          const [, range, opens, closes] = m;
+          if (range.includes('-')) {
+            const [s, e] = range.split('-');
+            const keys = Object.keys(DAY_ABBR);
+            const si = keys.indexOf(s), ei = keys.indexOf(e);
+            for (let i = si; i <= ei && i >= 0; i++)
+              hours[DAY_ABBR[keys[i]]] = `${opens}-${closes}`;
+          } else {
+            hours[DAY_ABBR[range] || range] = `${opens}-${closes}`;
+          }
+        }
+      }
+      return Object.keys(hours).length ? hours : null;
+    }
+
+    let salesHours = null, genericHours = null;
+
     for (const script of document.querySelectorAll('script[type="application/ld+json"]')) {
       try {
         const items = [].concat(JSON.parse(script.textContent));
         for (const item of items) {
           if (!item || typeof item !== 'object') continue;
           const type = String(item['@type'] || '').toLowerCase();
-          if (!type.includes('localbusiness') && !type.includes('autodealer') &&
-              !type.includes('dealer') && !type.includes('store')) continue;
+          if (!NAME_ADDR_TYPE_RE.test(type)) continue;
 
           if (item.name && !info.name)
             info.name = String(item.name).trim();
@@ -753,36 +808,19 @@
                   .filter(Boolean).join(', ');
           }
 
-          // openingHoursSpecification → {Monday: "9:00 AM-5:00 PM", ...}
-          if (!Object.keys(info.hours).length && item.openingHoursSpecification) {
-            for (const spec of [].concat(item.openingHoursSpecification)) {
-              for (const raw of [].concat(spec.dayOfWeek || [])) {
-                const day = raw.replace(/https?:\/\/schema\.org\//i, '');
-                if (day) info.hours[day] = `${spec.opens || ''}-${spec.closes || ''}`;
-              }
-            }
-          }
+          if (EXCLUDE_TYPE_RE.test(type)) continue; // never use service/parts/body-shop hours
 
-          // openingHours string "Mo-Fr 09:00-17:00"
-          if (!Object.keys(info.hours).length && item.openingHours) {
-            for (const oh of [].concat(item.openingHours)) {
-              const m = /^([A-Z][a-z](?:-[A-Z][a-z])?)\s+(\d{2}:\d{2})-(\d{2}:\d{2})/.exec(oh);
-              if (!m) continue;
-              const [, range, opens, closes] = m;
-              if (range.includes('-')) {
-                const [s, e] = range.split('-');
-                const keys = Object.keys(DAY_ABBR);
-                const si = keys.indexOf(s), ei = keys.indexOf(e);
-                for (let i = si; i <= ei && i >= 0; i++)
-                  info.hours[DAY_ABBR[keys[i]]] = `${opens}-${closes}`;
-              } else {
-                info.hours[DAY_ABBR[range] || range] = `${opens}-${closes}`;
-              }
-            }
-          }
+          const parsed = parseOpeningHours(item);
+          if (!parsed) continue;
+          if (SALES_TYPE_RE.test(type)) { if (!salesHours) salesHours = parsed; }
+          else if (GENERIC_TYPE_RE.test(type)) { if (!genericHours) genericHours = parsed; }
         }
       } catch {}
     }
+
+    // JSON-LD hours are only used as a fallback below — schema markup on real
+    // dealer sites is frequently stale (observed diverging from the actual
+    // on-page Sales Hours widget), so the literal displayed hours win when present.
 
     // 2. Fallback address: <address> tag or itemprop
     if (!info.address) {
@@ -798,8 +836,11 @@
         : (document.title || '').split(/[|\-–]/)[0].trim().substring(0, 80);
     }
 
-    // 4. Fallback hours: DOM scan for day-name + time patterns
-    if (!Object.keys(info.hours).length) {
+    // 4. Primary hours source: DOM scan for day-name + time patterns as literally
+    // displayed on the page. Runs unconditionally (not just as a JSON-LD fallback)
+    // since schema.org data can be stale — see note above.
+    const domHours = {};
+    {
       const HOURS_RE = /(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s*[-–to]+\s*(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)/i;
 
       // Map abbreviated names (Mon/Tue/…) and full names to canonical full names
@@ -846,6 +887,35 @@
         return /closed/i.test(parentText);
       }
 
+      // Pages that break hours out by department (Sales/Service/Parts/Body Shop)
+      // label each block with a heading. Build a document-order list of those
+      // headings so each hours row can be attributed to the nearest preceding
+      // one — rows under a Service/Parts/etc. heading are excluded since we
+      // only want sales/dealership/showroom hours.
+      const DEPT_HEADING_SEL = 'h1,h2,h3,h4,h5,h6,strong,b,caption,summary,legend,th,dt,' +
+        '[class*="title" i],[class*="heading" i],[class*="header" i],[class*="label" i]';
+      const SALES_DEPT_RE = /\b(sales|dealership|showroom)\b/i;
+      const OTHER_DEPT_RE = /\b(service|parts|body\s*shop|collision|repair|rental|tires?)\b/i;
+      // Only headings that unambiguously name a department are classified — a
+      // generic "Hours" heading (no department word) is left untouched so it
+      // doesn't accidentally exclude an unlabeled single hours widget.
+      const deptHeadings = [...document.querySelectorAll(DEPT_HEADING_SEL)]
+        .map(el => ({ el, text: (el.textContent || '').trim() }))
+        .filter(h => h.text.length < 60 && /\bhours\b/i.test(h.text) &&
+                     (SALES_DEPT_RE.test(h.text) || OTHER_DEPT_RE.test(h.text)))
+        .map(h => ({ el: h.el, exclude: !SALES_DEPT_RE.test(h.text) }));
+
+      // Returns true if `el` sits under a non-sales department heading (Service/Parts/…)
+      function isExcludedDept(el) {
+        let result = false;
+        for (const h of deptHeadings) {
+          const pos = h.el.compareDocumentPosition(el);
+          if (pos & Node.DOCUMENT_POSITION_FOLLOWING) result = h.exclude;
+          else break;
+        }
+        return result;
+      }
+
       // Include tr so table-row text is scanned even when day/time are in separate cells
       for (const el of document.querySelectorAll('tr, td, li, div, p, span, dt, dd, th')) {
         const text = (el.textContent || '').trim().replace(/\s+/g, ' ');
@@ -855,6 +925,7 @@
         const RANGE_RE = /^(Mon(?:day)?|Tue(?:sday)?|Wed(?:nesday)?|Thu(?:rsday)?|Fri(?:day)?|Sat(?:urday)?|Sun(?:day)?)\s*[-–]\s*(Mon(?:day)?|Tue(?:sday)?|Wed(?:nesday)?|Thu(?:rsday)?|Fri(?:day)?|Sat(?:urday)?|Sun(?:day)?)\b/i;
         const rangeMatch = RANGE_RE.exec(text);
         if (rangeMatch) {
+          if (isExcludedDept(el)) continue;
           const startDay = resolveDay(rangeMatch[1]);
           const endDay   = resolveDay(rangeMatch[2]);
           if (startDay && endDay) {
@@ -862,12 +933,12 @@
             const hm = findTime(el, text);
             const closed = !hm && isClosed(el, text);
             for (const day of days) {
-              if (info.hours[day]) continue;
+              if (domHours[day]) continue;
               if (hm) {
-                info.hours[day] = `${hm[1].trim()}-${hm[2].trim()}`;
+                domHours[day] = `${hm[1].trim()}-${hm[2].trim()}`;
                 info.raw_hours_text.push(text.substring(0, 100));
               } else if (closed) {
-                info.hours[day] = 'Closed';
+                domHours[day] = 'Closed';
               }
             }
             continue;
@@ -875,22 +946,61 @@
         }
 
         // Single day: "Monday", "Mon", "Monday:", "Mon:"
-        const SINGLE_DAY_RE = /^(Mon(?:day)?|Tue(?:sday)?|Wed(?:nesday)?|Thu(?:rsday)?|Fri(?:day)?|Sat(?:urday)?|Sun(?:day)?)[\s:]/i;
+        // (?:[\s:]|$) also matches a day name that is the cell's ENTIRE text
+        // (e.g. "Monday" alone in a <td>/<div>, with hours in a sibling cell) —
+        // a bare `[\s:]` never matches once the text has been trimmed.
+        const SINGLE_DAY_RE = /^(Mon(?:day)?|Tue(?:sday)?|Wed(?:nesday)?|Thu(?:rsday)?|Fri(?:day)?|Sat(?:urday)?|Sun(?:day)?)(?:[\s:]|$)/i;
         const singleMatch = SINGLE_DAY_RE.exec(text);
         if (!singleMatch) continue;
+        if (isExcludedDept(el)) continue;
         const dayFound = resolveDay(singleMatch[1]);
-        if (!dayFound || info.hours[dayFound]) continue;
+        if (!dayFound || domHours[dayFound]) continue;
         const hm = findTime(el, text);
         if (hm) {
-          info.hours[dayFound] = `${hm[1].trim()}-${hm[2].trim()}`;
+          domHours[dayFound] = `${hm[1].trim()}-${hm[2].trim()}`;
           info.raw_hours_text.push(text.substring(0, 100));
         } else if (isClosed(el, text)) {
-          info.hours[dayFound] = 'Closed';
+          domHours[dayFound] = 'Closed';
         }
       }
     }
 
+    info.hours = Object.keys(domHours).length ? domHours : (salesHours || genericHours || {});
+
+    // Normalize every extracted range to a consistent 12-hour display format,
+    // regardless of whether it came from 24-hour JSON-LD or as-scraped DOM text.
+    for (const day of Object.keys(info.hours)) {
+      info.hours[day] = formatHoursTo12Hour(info.hours[day]);
+    }
+
     return info;
+  }
+
+  function formatHoursTo12Hour(raw) {
+    if (!raw || /closed/i.test(raw)) return raw ? 'Closed' : raw;
+    const parts = raw.split(/[-–]/).map(s => s.trim()).filter(Boolean);
+    if (parts.length !== 2) return raw;
+
+    function fmt(t) {
+      // 24-hour "HH:MM"
+      let m = /^(\d{1,2}):(\d{2})$/.exec(t);
+      if (m) {
+        let h = parseInt(m[1], 10);
+        const period = h >= 12 ? 'PM' : 'AM';
+        h = h % 12 || 12;
+        return `${h}:${m[2]} ${period}`;
+      }
+      // 12-hour "9:00AM" / "9:00 AM" / "9AM" / "9 AM"
+      m = /^(\d{1,2})(?::(\d{2}))?\s*(AM|PM)$/i.exec(t);
+      if (m) {
+        const h = parseInt(m[1], 10);
+        return `${h}:${m[2] || '00'} ${m[3].toUpperCase()}`;
+      }
+      return t;
+    }
+
+    const [open, close] = parts;
+    return `${fmt(open)} - ${fmt(close)}`;
   }
 
   // ---- Sprint 3: Phone Number Collection ----
@@ -1002,11 +1112,35 @@
         if (!href || href.startsWith('javascript:') || href.startsWith('mailto:') || href.startsWith('tel:')) return false;
         try {
           const u = new URL(href);
-          // Reject if path is exactly "/" (or empty) with no meaningful search/hash content
-          if ((u.pathname === '/' || u.pathname === '') && !u.search) return false;
-          if (u.hash && (u.pathname === '/' || u.pathname === '') && !u.search) return false;
+          // Reject a bare root-path link back to THIS site's own homepage (filler/logo
+          // links) — but only when it has neither a search string NOR a hash. A root
+          // path on a DIFFERENT (sub)domain (e.g. a parts-ordering/scheduling portal on
+          // its own subdomain) is a real destination, not filler. And a hash fragment
+          // (e.g. "/#tradeIn") commonly drives an in-page SPA route or modal trigger —
+          // also a real destination, not filler, even on the same host.
+          const isSameHost = u.hostname === location.hostname;
+          if (isSameHost && (u.pathname === '/' || u.pathname === '') && !u.search && !u.hash) return false;
         } catch { return false; }
         return true;
+      }
+
+      // Some dealer sites trigger service/parts scheduling widgets via a
+      // javascript:-href or a plain <button> rather than a navigable link —
+      // isRealLink() correctly excludes these from feature_url-based detection
+      // (there's nowhere to navigate), but we still want to flag the feature as
+      // present and remember its visible text so the backend can click it in
+      // place and screenshot whatever modal appears.
+      function findModalTrigger(textKeywords) {
+        const candidates = Array.from(document.querySelectorAll('a[href], button, [role="button"]'));
+        for (const el of candidates) {
+          const href = (el.href || '').trim();
+          const isNavigable = href && !href.startsWith('javascript:') && href !== '#';
+          if (isNavigable) continue; // real links are handled by the primary isRealLink path
+          const text = (el.textContent || '').trim().replace(/\s+/g, ' ').toLowerCase();
+          if (!text || text.length > 60) continue;
+          if (textKeywords.some((k) => text.includes(k))) return el;
+        }
+        return null;
       }
 
       // ---- 1. Live Chat Detection ----
@@ -1120,6 +1254,16 @@
         });
         if (svcLink) {
           features.service_scheduling = { detected: true, provider: 'Custom', evidence: svcLink.textContent.trim().substring(0, 80), feature_url: svcLink.href };
+        } else {
+          const svcTrigger = findModalTrigger(SVC_LINK_KEYWORDS);
+          if (svcTrigger) {
+            features.service_scheduling = {
+              detected: true,
+              provider: 'Custom',
+              evidence: svcTrigger.textContent.trim().replace(/\s+/g, ' ').substring(0, 80),
+              modal_trigger_text: svcTrigger.textContent.trim().replace(/\s+/g, ' ').substring(0, 80),
+            };
+          }
         }
       }
 
@@ -1207,6 +1351,15 @@
           evidence: partsForm ? 'parts form on page' : (partsLink?.textContent.trim().substring(0, 80) || 'link found'),
           feature_url: partsForm ? window.location.href : (partsLink?.href || ''),
         };
+      } else {
+        const partsTrigger = findModalTrigger(PARTS_LINK_KEYWORDS);
+        if (partsTrigger) {
+          features.parts_form = {
+            detected: true,
+            evidence: partsTrigger.textContent.trim().replace(/\s+/g, ' ').substring(0, 80),
+            modal_trigger_text: partsTrigger.textContent.trim().replace(/\s+/g, ' ').substring(0, 80),
+          };
+        }
       }
 
     } catch (err) {

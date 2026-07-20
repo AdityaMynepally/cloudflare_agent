@@ -273,6 +273,7 @@ async def download_pptx(session_id: str):
         mobile_results=mobile_results,
         vdp_screenshot=vdp_screenshot,
         contact_form_screenshot=result.get("contact_form_screenshot"),
+        trade_value_screenshot=result.get("trade_value_screenshot"),
         site_summary=result.get("site_summary", ""),
         overall_score=result.get("overall_score", 0.0),
         overall_grade=result.get("overall_grade", ""),

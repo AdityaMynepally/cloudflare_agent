@@ -1193,6 +1193,16 @@
       all.push({ url: full.vdp_screenshot.screenshot_url, label: 'VDP', badge: 'VDP', cls: 'vdp-t', pageUrl: full.vdp_screenshot.url });
     if (full.contact_form_screenshot?.screenshot_url)
       all.push({ url: full.contact_form_screenshot.screenshot_url, label: 'Contact Form', badge: 'Form', cls: 'form-t', pageUrl: full.contact_form_screenshot.url });
+    if (full.trade_value_screenshot?.screenshot_url) {
+      const tv = full.trade_value_screenshot;
+      all.push({
+        url: tv.screenshot_url,
+        label: tv.modal_detected ? 'Value Your Trade (modal)' : 'Value Your Trade',
+        badge: 'Trade',
+        cls: 'form-t',
+        pageUrl: tv.url,
+      });
+    }
 
     // Feature screenshots — show the page where each Sprint 2 feature was detected
     const FEATURE_BADGES = {
@@ -1204,6 +1214,7 @@
       parts_form:         '⚙️ Parts Form',
     };
     const df = full.dealership_features || {};
+    const featureModalShots = full.feature_modal_screenshots || {};
     const shotByUrl = {};
     (full.desktop_results || []).forEach(r => {
       if (r.screenshot_url && r.url) shotByUrl[r.url] = r.screenshot_url;
@@ -1211,7 +1222,21 @@
     const addedShotUrls = new Set(all.map(s => s.url));
     for (const [key, badge] of Object.entries(FEATURE_BADGES)) {
       const f = df[key];
-      if (!f?.detected || !f.source_page) continue;
+      if (!f?.detected) continue;
+
+      // A dedicated click-and-screenshot modal capture (features whose only
+      // trigger is a javascript:-href/button, no navigable page) takes
+      // priority over the generic page screenshot fallback below.
+      const modalShot = featureModalShots[key];
+      if (modalShot?.screenshot_url) {
+        if (addedShotUrls.has(modalShot.screenshot_url)) continue;
+        addedShotUrls.add(modalShot.screenshot_url);
+        const label = badge + (modalShot.modal_detected ? ' (modal)' : '');
+        all.push({ url: modalShot.screenshot_url, label, badge: label, cls: 'feat-t', pageUrl: modalShot.url });
+        continue;
+      }
+
+      if (!f.source_page) continue;
       const shotUrl = shotByUrl[f.source_page];
       if (!shotUrl || addedShotUrls.has(shotUrl)) continue;
       addedShotUrls.add(shotUrl);

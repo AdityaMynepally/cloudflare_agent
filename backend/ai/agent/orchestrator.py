@@ -16,6 +16,7 @@ import asyncio
 import base64
 import logging
 import random
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Coroutine, Optional
@@ -107,22 +108,33 @@ NON_VDP_PATH_SEGMENTS = [
 ]
 
 
+# Some dealer CMS templates (seen on DeLand Kia, Daytona Toyota) encode the VDP
+# as separate path SEGMENTS rather than one hyphen-joined slug, e.g.
+# "/vehicle/New/2026/Toyota/RAV4-Plug-in-Hybrid/JTM7ERAV2TJ014477/" — the last
+# segment is a bare 17-char VIN with zero hyphens, so the hyphen-count slug
+# check below never matches it.
+_VIN_RE = re.compile(r"^[a-z0-9]{17}$")
+
+
 def _is_likely_vdp_path(path: str) -> bool:
     """True if `path` looks like an individual vehicle listing, not a category
     /body-style/model landing page.
 
-    A real VDP slug is always a compound of make/model/trim/VIN joined by
+    A real VDP slug is either a compound of make/model/trim/VIN joined by
     hyphens (e.g. "new-2026-toyota-camry-xle-vin" or
-    "new-bloomington-2025-honda-prologue-elite-vin") — at least 3 words. A
-    category page like "/new-vehicles/cars/" or "/new-vehicles/corolla/" has a
-    bare 1-2 word last segment and would otherwise false-match VDP_PATH_HINTS
-    (e.g. "/cars/").
+    "new-bloomington-2025-honda-prologue-elite-vin") — at least 3 words — or,
+    for CMS templates using one segment per token, a path containing a
+    17-character VIN segment. A category page like "/new-vehicles/cars/" or
+    "/new-vehicles/corolla/" has neither and would otherwise false-match
+    VDP_PATH_HINTS (e.g. "/cars/").
     """
-    last_segment = path.rstrip("/").rsplit("/", 1)[-1]
+    segments = [s for s in path.split("/") if s]
+    last_segment = segments[-1] if segments else ""
     slug_like = last_segment.count("-") >= 2
     has_hint = any(hint in path for hint in VDP_PATH_HINTS)
     has_condition = bool(VDP_CONDITION_RE.search(path))
-    return slug_like and (has_hint or has_condition)
+    has_vin_segment = any(_VIN_RE.match(s) for s in segments)
+    return (slug_like and (has_hint or has_condition)) or (has_hint and has_vin_segment)
 
 
 import os
@@ -364,6 +376,13 @@ class AuditOrchestrator:
             contact_url = categorized.get("contact")
             if contact_url:
                 await self._run_contact_form_phase(bridge, contact_url, session, emit)
+
+            # ---- Phase 2.55: TRADE VALUE MODAL SCREENSHOT ----
+            await self._run_trade_value_phase(bridge, session, emit)
+
+            # ---- Phase 2.56: SERVICE / PARTS MODAL SCREENSHOTS ----
+            await self._run_feature_click_phase(bridge, session, emit, "service_scheduling", "Schedule Service")
+            await self._run_feature_click_phase(bridge, session, emit, "parts_form", "Order Parts")
 
             # ---- Phase 2.6: GOOGLE BUSINESS PROFILE VERIFICATION ----
             await self._run_gbp_phase(session, emit)
@@ -1128,6 +1147,100 @@ class AuditOrchestrator:
 
         except Exception as e:
             logger.warning(f"Contact form phase error (non-fatal): {e}", exc_info=True)
+
+    async def _run_trade_value_phase(
+        self,
+        bridge,
+        session: AuditSession,
+        emit,
+    ) -> None:
+        """If a trade-in tool was detected, interact with it and screenshot the
+        result. Many dealer trade-in widgets (KBB/TradePending/AccuTrade/Edmunds-
+        style) reveal the vehicle's value in a modal only after a vehicle is
+        entered — often rendered via a cross-origin iframe overlay. This enters
+        a generic real vehicle and captures whatever appears (modal or page)."""
+        feature = session.dealership_features.get("trade_in_tool", {})
+        if not feature.get("detected"):
+            return
+
+        source_page = feature.get("source_page") or session.target_url
+        try:
+            await emit("progress", "Checking trade-value tool for a popup...", {
+                "status": "trade_value",
+            })
+            result = await bridge.capture_trade_value(source_page)
+        except HealingError as e:
+            logger.warning(f"Trade value capture failed: {e}")
+            return
+
+        if not result.get("found"):
+            return
+
+        screenshot_b64 = result.get("screenshot_base64")
+        screenshot_path = None
+        if screenshot_b64:
+            screenshot_path = self._save_screenshot(source_page, screenshot_b64, ViewportType.DESKTOP)
+
+        session.trade_value_screenshot = {
+            "screenshot_path": screenshot_path,
+            "screenshot_url": f"/screenshots/{Path(screenshot_path).name}" if screenshot_path else None,
+            "url": source_page,
+            "provider": feature.get("provider", ""),
+            "modal_detected": result.get("modal_detected", False),
+        }
+
+        modal_note = " (modal detected)" if result.get("modal_detected") else ""
+        await emit("progress", f"Trade-value screenshot captured{modal_note}", {
+            "status": "trade_value",
+            "tradeValueScreenshotUrl": session.trade_value_screenshot.get("screenshot_url"),
+        })
+
+    async def _run_feature_click_phase(
+        self,
+        bridge,
+        session: AuditSession,
+        emit,
+        feature_key: str,
+        label: str,
+    ) -> None:
+        """For features whose only trigger is a javascript:-href or plain
+        <button> (no navigable feature_url — e.g. "Schedule Service" / "Order
+        Parts"), click it in place and screenshot whatever modal appears,
+        rather than reporting the feature as merely 'not detected'."""
+        feature = session.dealership_features.get(feature_key, {})
+        click_text = feature.get("modal_trigger_text")
+        if not feature.get("detected") or not click_text:
+            return
+
+        source_page = feature.get("source_page") or session.target_url
+        try:
+            await emit("progress", f"Checking {label} for a popup...", {"status": feature_key})
+            result = await bridge.capture_feature_click(click_text, source_page)
+        except HealingError as e:
+            logger.warning(f"{label} click capture failed: {e}")
+            return
+
+        if not result.get("found"):
+            return
+
+        screenshot_b64 = result.get("screenshot_base64")
+        screenshot_path = None
+        if screenshot_b64:
+            screenshot_path = self._save_screenshot(source_page, screenshot_b64, ViewportType.DESKTOP)
+
+        session.feature_modal_screenshots[feature_key] = {
+            "screenshot_path": screenshot_path,
+            "screenshot_url": f"/screenshots/{Path(screenshot_path).name}" if screenshot_path else None,
+            "url": source_page,
+            "label": label,
+            "modal_detected": result.get("modal_detected", False),
+        }
+
+        modal_note = " (modal detected)" if result.get("modal_detected") else ""
+        await emit("progress", f"{label} screenshot captured{modal_note}", {
+            "status": feature_key,
+            "screenshotUrl": session.feature_modal_screenshots[feature_key].get("screenshot_url"),
+        })
 
     async def _run_homepage_checks(
         self,

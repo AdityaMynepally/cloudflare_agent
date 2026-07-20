@@ -258,6 +258,10 @@ class AuditSession:
     inventory_screenshot: Optional[dict] = None       # {screenshot_path, url, title}
     vdp_screenshot: Optional[dict] = None             # {screenshot_path, url, title}
     contact_form_screenshot: Optional[dict] = None    # {screenshot_path, url, title, fields_filled}
+    trade_value_screenshot: Optional[dict] = None     # {screenshot_path, url, provider, modal_detected}
+    # Modal screenshots for features whose only trigger is a click (no navigable
+    # URL) — e.g. "Schedule Service" / "Order Parts" buttons. Keyed by feature name.
+    feature_modal_screenshots: dict = field(default_factory=dict)
     # Sprint 1 — aggregated technical audit metrics (deduplicated across all pages)
     broken_links_all: list = field(default_factory=list)
     broken_images_all: list = field(default_factory=list)
@@ -367,6 +371,8 @@ class AuditSession:
             "inventory_screenshot": self.inventory_screenshot,
             "vdp_screenshot": self.vdp_screenshot,
             "contact_form_screenshot": self.contact_form_screenshot,
+            "trade_value_screenshot": self.trade_value_screenshot,
+            "feature_modal_screenshots": self.feature_modal_screenshots,
             "business_info_website": self.business_info_website,
             "gbp_data": self.gbp_data,
             "address_comparison": self.address_comparison,

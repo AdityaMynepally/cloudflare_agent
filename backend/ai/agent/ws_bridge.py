@@ -211,3 +211,15 @@ class ExtensionBridge:
 
     async def fill_contact_form(self) -> dict:
         return await self.send_with_retry({"type": "fill_contact_form"})
+
+    async def capture_trade_value(self, url: Optional[str] = None) -> dict:
+        cmd: dict = {"type": "capture_trade_value"}
+        if url:
+            cmd["url"] = url
+        return await self.send_with_retry(cmd)
+
+    async def capture_feature_click(self, click_text: str, url: Optional[str] = None) -> dict:
+        cmd: dict = {"type": "capture_feature_click", "clickText": click_text}
+        if url:
+            cmd["url"] = url
+        return await self.send_with_retry(cmd)

@@ -367,6 +367,7 @@ def generate_audit_pptx(
     mobile_results: list,
     vdp_screenshot: Optional[dict] = None,
     contact_form_screenshot: Optional[dict] = None,
+    trade_value_screenshot: Optional[dict] = None,
     site_summary: str = "",
     overall_score: float = 0.0,
     overall_grade: str = "",
@@ -398,6 +399,7 @@ def generate_audit_pptx(
     extras = sum([
         1 if vdp_screenshot and vdp_screenshot.get("screenshot_path") else 0,
         1 if contact_form_screenshot and contact_form_screenshot.get("screenshot_path") else 0,
+        1 if trade_value_screenshot and trade_value_screenshot.get("screenshot_path") else 0,
     ])
     total = len(valid_desktop) + len(valid_mobile) + extras
 
@@ -454,6 +456,18 @@ def generate_audit_pptx(
             contact_form_screenshot.get("title", "Contact Form"),
             contact_form_screenshot.get("url", ""),
             "Contact",
+        )
+
+    # Trade value tool section
+    if trade_value_screenshot and trade_value_screenshot.get("screenshot_path"):
+        modal_note = "Modal popup detected" if trade_value_screenshot.get("modal_detected") else "Page result"
+        _add_section_divider(prs, "Value Your Trade", modal_note)
+        _add_screenshot_slide(
+            prs,
+            trade_value_screenshot["screenshot_path"],
+            trade_value_screenshot.get("title", "Value Your Trade"),
+            trade_value_screenshot.get("url", ""),
+            "Trade",
         )
 
     # Technical Audit Findings section (Sprint 1 metrics)
