@@ -59,6 +59,17 @@ async def fetch_gbp_data(
             })
             data = resp.json()
 
+            # SerpAPI returns HTTP 200 with an "error" field for auth/quota
+            # failures (invalid key, plan search limit exhausted, etc.) rather
+            # than an HTTP error status — without this check that error is
+            # indistinguishable from "no listing found" and gets silently
+            # swallowed, making the whole GBP section vanish with no clue why.
+            if data.get("error"):
+                logger.warning(
+                    f"[GBP] SerpAPI error for query {query!r} (HTTP {resp.status_code}): {data['error']}"
+                )
+                return None
+
             # SerpAPI returns either place_results (direct single match)
             # or local_results (list of matches)
             place = data.get("place_results")

@@ -1199,7 +1199,13 @@
           break;
         }
       }
-      if (!features.trade_in_tool.detected) {
+      // Always look for the actual trigger link, even when a provider was
+      // already matched via script/iframe above — that match only tells us
+      // WHICH widget is embedded, not where its trigger link lives, so
+      // without this feature_url stays unset and the report falls back to
+      // source_page (often just the homepage) instead of the real trade-in
+      // page/widget the user would actually click.
+      {
         const TRADEIN_LINK_KEYWORDS = [
           'trade-in', 'trade in', 'value my trade', 'value your trade', 'value your vehicle',
           'get trade value', 'instant cash offer', 'sell my car', 'sell your car', 'trade your',
@@ -1216,7 +1222,12 @@
                  TRADEIN_HREF_KEYWORDS.some(k => href.includes(k));
         });
         if (tradeLink) {
-          features.trade_in_tool = { detected: true, provider: 'Custom', evidence: tradeLink.textContent.trim().substring(0, 80), feature_url: tradeLink.href };
+          features.trade_in_tool = {
+            detected: true,
+            provider: features.trade_in_tool.provider || 'Custom',
+            evidence: tradeLink.textContent.trim().substring(0, 80),
+            feature_url: tradeLink.href,
+          };
         }
       }
 
@@ -1236,7 +1247,9 @@
           break;
         }
       }
-      if (!features.service_scheduling.detected) {
+      // Always look for the actual trigger link/button, even when a provider
+      // was already matched via script/iframe above — see trade_in_tool note.
+      {
         const SVC_LINK_KEYWORDS = [
           'schedule service', 'book service', 'service appointment',
           'schedule an appointment', 'book appointment', 'schedule my service',
@@ -1253,13 +1266,18 @@
                  SVC_HREF_KEYWORDS.some(k => href.includes(k));
         });
         if (svcLink) {
-          features.service_scheduling = { detected: true, provider: 'Custom', evidence: svcLink.textContent.trim().substring(0, 80), feature_url: svcLink.href };
-        } else {
+          features.service_scheduling = {
+            detected: true,
+            provider: features.service_scheduling.provider || 'Custom',
+            evidence: svcLink.textContent.trim().substring(0, 80),
+            feature_url: svcLink.href,
+          };
+        } else if (!features.service_scheduling.feature_url) {
           const svcTrigger = findModalTrigger(SVC_LINK_KEYWORDS);
           if (svcTrigger) {
             features.service_scheduling = {
               detected: true,
-              provider: 'Custom',
+              provider: features.service_scheduling.provider || 'Custom',
               evidence: svcTrigger.textContent.trim().replace(/\s+/g, ' ').substring(0, 80),
               modal_trigger_text: svcTrigger.textContent.trim().replace(/\s+/g, ' ').substring(0, 80),
             };

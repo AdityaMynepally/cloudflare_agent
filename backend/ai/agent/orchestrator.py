@@ -509,14 +509,21 @@ class AuditOrchestrator:
     ) -> Optional[str]:
         """Return the best inventory/SRP URL from discovered links.
 
-        Priority order:
-        1. Explicit 'inventory' category from page-patterns.js
-        2. URL path matches a known inventory pattern
-        3. Link text contains inventory-related keywords
+        Collects every plausible inventory candidate (explicit 'inventory'
+        category, URL pattern match, text keyword match) and PREFERS a
+        NEW-inventory candidate over used/CPO — a dealership audit should
+        default to auditing new stock. Without this preference, whichever
+        inventory-like link happens to appear first in the page's link order
+        wins even when it's the Certified/Used section — e.g. because the
+        "New" nav item is a dropdown toggle with a bare '#' href, so its
+        submenu links (the actual new-inventory URL) get scanned later than
+        a direct "Certified Pre-Owned" link elsewhere on the page.
         """
-        # 1. Only use the 'inventory' category — not 'services' or 'products'
+        candidates: list[str] = []
+
+        # 1. Explicit 'inventory' category from page-patterns.js
         if categorized.get("inventory"):
-            return categorized["inventory"]
+            candidates.append(categorized["inventory"])
 
         # Keywords that appear in link text/aria-label for inventory nav items
         INVENTORY_TEXT_KEYWORDS = [
@@ -556,7 +563,18 @@ class AuditOrchestrator:
             if text_matched is None and any(kw in text for kw in INVENTORY_TEXT_KEYWORDS):
                 text_matched = href
 
-        return url_matched or text_matched
+        if url_matched:
+            candidates.append(url_matched)
+        if text_matched:
+            candidates.append(text_matched)
+
+        if not candidates:
+            return None
+
+        for c in candidates:
+            if categorize_inventory_url(c) == "new":
+                return c
+        return candidates[0]
 
     def _find_preowned_url(self, internal_links: list, target_url: str) -> Optional[str]:
         """Find a used / CPO inventory URL from the site's navigation links.
@@ -1163,7 +1181,10 @@ class AuditOrchestrator:
         if not feature.get("detected"):
             return
 
-        source_page = feature.get("source_page") or session.target_url
+        # Prefer feature_url (the actual trade-in link/page) over source_page
+        # (whichever page the feature was first detected on — often just the
+        # homepage when detection came from a sitewide script/iframe match).
+        source_page = feature.get("feature_url") or feature.get("source_page") or session.target_url
         try:
             await emit("progress", "Checking trade-value tool for a popup...", {
                 "status": "trade_value",
