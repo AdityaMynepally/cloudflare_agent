@@ -98,6 +98,16 @@ if _ui_dir.exists():
 connected_extensions: Dict[str, WebSocket] = {}
 extension_bridges: Dict[str, Any] = {}
 
+# Maps a chat/UI session_id -> the specific extension session_id it is paired
+# with. Without this, concurrent users sharing one deployed backend would all
+# have their audits routed to whichever extension happened to connect first
+# (see _run_audit in chat/router.py before this was added) — one user's audit
+# could silently execute in a totally different person's browser. Populated by
+# POST /api/chat/pair once the user copies their chat session's pairing code
+# into the extension popup. Keyed by chat session_id since one physical
+# extension can legitimately serve multiple tabs/sessions for the same person.
+session_extension_map: Dict[str, str] = {}
+
 
 @app.websocket("/ws/extension/{session_id}")
 async def websocket_extension(websocket: WebSocket, session_id: str):
@@ -167,7 +177,7 @@ async def websocket_extension(websocket: WebSocket, session_id: str):
 
 from chat.router import router as chat_router, configure as configure_chat
 
-configure_chat(connected_extensions, extension_bridges, _get_llm_provider)
+configure_chat(connected_extensions, extension_bridges, session_extension_map, _get_llm_provider)
 app.include_router(chat_router)
 
 

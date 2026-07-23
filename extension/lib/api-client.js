@@ -3,7 +3,7 @@
  * Reads backendUrl and apiKey from chrome.storage.local.
  */
 
-async function getConfig() {
+export async function getConfig() {
   return new Promise((resolve) => {
     chrome.storage.local.get(['backendUrl', 'apiKey'], (config) => {
       resolve({
@@ -77,6 +77,28 @@ export async function sendBatchCapture(batchData) {
     method: 'POST',
     headers: buildHeaders(apiKey),
     body: JSON.stringify(batchData)
+  });
+  if (!resp.ok) {
+    const text = await resp.text();
+    throw new Error(`Backend error ${resp.status}: ${text}`);
+  }
+  return resp.json();
+}
+
+/**
+ * Pair this extension with a chat/UI session, using the pairing code (the
+ * chat session's own SESSION_ID) shown in the chat UI. After this, audits
+ * started from that chat session are routed to this specific extension
+ * instead of an arbitrary connected one — required for multiple people to
+ * share one deployed backend without their audits crossing into each
+ * other's browsers.
+ */
+export async function pairSession(chatSessionId, extSessionId) {
+  const { backendUrl, apiKey } = await getConfig();
+  const resp = await fetch(`${backendUrl}/api/chat/pair`, {
+    method: 'POST',
+    headers: buildHeaders(apiKey),
+    body: JSON.stringify({ session_id: chatSessionId, ext_session_id: extSessionId })
   });
   if (!resp.ok) {
     const text = await resp.text();

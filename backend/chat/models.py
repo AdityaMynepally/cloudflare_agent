@@ -39,3 +39,8 @@ class ChatResponse(BaseModel):
     intent: str
     response: str
     audit_id: Optional[str] = None
+
+
+class PairRequest(BaseModel):
+    session_id: str      # chat/UI session (the pairing code the user copied)
+    ext_session_id: str   # the extension's own stable session id

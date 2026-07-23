@@ -4,11 +4,12 @@ import asyncio
 import logging
 import uuid
 from datetime import datetime
+from typing import Optional
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response, StreamingResponse
 
-from chat.models import ChatMessage, ChatRequest, ChatResponse, SSEEvent
+from chat.models import ChatMessage, ChatRequest, ChatResponse, PairRequest, SSEEvent
 from chat.intent import Intent, parse_intent
 from chat.session import session_manager
 from chat.sse import sse_stream
@@ -20,15 +21,33 @@ router = APIRouter(prefix="/api/chat", tags=["chat"])
 # These will be set by api.py when wiring up
 _connected_extensions = None
 _extension_bridges = None
+_session_extension_map = None
 _get_llm_provider = None
 
 
-def configure(connected_extensions, extension_bridges, get_llm_provider):
+def configure(connected_extensions, extension_bridges, session_extension_map, get_llm_provider):
     """Called by api.py to inject shared state."""
-    global _connected_extensions, _extension_bridges, _get_llm_provider
+    global _connected_extensions, _extension_bridges, _session_extension_map, _get_llm_provider
     _connected_extensions = connected_extensions
     _extension_bridges = extension_bridges
+    _session_extension_map = session_extension_map
     _get_llm_provider = get_llm_provider
+
+
+def _bridge_for_session(session_id: str):
+    """Return the ExtensionBridge paired with this chat session, or None.
+
+    Looks up the session's paired extension (set via POST /api/chat/pair)
+    rather than picking an arbitrary connected extension — with more than one
+    extension connected to a shared deployment, "arbitrary" means a user's
+    audit can silently run in someone else's browser.
+    """
+    ext_session_id = (_session_extension_map or {}).get(session_id)
+    if not ext_session_id:
+        return None
+    if ext_session_id not in (_connected_extensions or {}):
+        return None  # paired extension exists but isn't currently connected
+    return (_extension_bridges or {}).get(ext_session_id)
 
 
 @router.post("/message", response_model=ChatResponse)
@@ -76,11 +95,18 @@ async def send_message(request: ChatRequest):
         )
 
     if intent == Intent.AUDIT and url:
-        # Check extension is connected
-        if not _connected_extensions or len(_connected_extensions) == 0:
+        # Check THIS session has a paired, currently-connected extension —
+        # not just "some extension is connected somewhere" (which, on a
+        # shared deployment with multiple users, could be someone else's).
+        if _bridge_for_session(session_id) is None:
+            is_paired = session_id in (_session_extension_map or {})
             response_text = (
-                "No Chrome extension connected. Please install and connect "
-                "the Web Audit extension, then try again."
+                "Your paired extension isn't currently connected. Open Chrome "
+                "with the extension installed and try again."
+                if is_paired else
+                "No extension paired with this session yet. Open the extension "
+                "popup, enter this session's pairing code (shown in the chat UI), "
+                "and try again."
             )
             session_manager.add_message(ChatMessage(
                 session_id=session_id, role="assistant", content=response_text,
@@ -130,14 +156,15 @@ async def _run_audit(session_id: str, audit_id: str, url: str):
     from ai.agent.ws_bridge import ExtensionBridge
 
     try:
-        # Pick first connected extension
-        ext_session_id = next(iter(_connected_extensions))
-        bridge = _extension_bridges.get(ext_session_id)
+        # Use the extension paired with THIS chat session (see /api/chat/pair),
+        # never an arbitrary connected extension — with multiple users sharing
+        # a deployed backend, "arbitrary" can mean someone else's browser.
+        bridge = _bridge_for_session(session_id)
 
         if not bridge:
             await session_manager.emit_event(session_id, SSEEvent(
                 event="error",
-                data={"message": "Extension bridge not available"},
+                data={"message": "No paired, connected extension available for this session"},
             ))
             await session_manager.emit_done(session_id)
             return
@@ -298,10 +325,49 @@ async def download_pptx(session_id: str):
 
 
 @router.get("/extension-status")
-async def extension_status():
-    """Check if any Chrome extension is connected."""
+async def extension_status(session_id: Optional[str] = None):
+    """Check extension connectivity.
+
+    Always returns the global connected/count fields (useful for admin
+    visibility on a shared deployment). When `session_id` is provided, also
+    reports whether THIS session specifically has a paired extension and
+    whether that paired extension is currently connected — this is what the
+    UI should actually gate "ready to audit" on, since with multiple users
+    the global count can be >0 while nobody has paired with you yet.
+    """
     connected = bool(_connected_extensions and len(_connected_extensions) > 0)
-    return {
+    result = {
         "connected": connected,
         "count": len(_connected_extensions) if _connected_extensions else 0,
+    }
+    if session_id:
+        ext_session_id = (_session_extension_map or {}).get(session_id)
+        result["paired"] = ext_session_id is not None
+        result["paired_and_connected"] = _bridge_for_session(session_id) is not None
+    return result
+
+
+@router.post("/pair")
+async def pair_session(req: PairRequest):
+    """Pair a chat/UI session with a specific extension session.
+
+    Called by the extension (not the UI) once the user copies their chat
+    session's pairing code into the extension popup. After this, audits
+    started from that chat session are routed to this specific extension —
+    see _bridge_for_session — instead of an arbitrary connected one.
+    """
+    if not req.session_id or not req.ext_session_id:
+        raise HTTPException(status_code=400, detail="session_id and ext_session_id are required")
+
+    if _session_extension_map is None:
+        raise HTTPException(status_code=500, detail="Pairing state not configured")
+
+    _session_extension_map[req.session_id] = req.ext_session_id
+    logger.info(f"Paired chat session {req.session_id} -> extension {req.ext_session_id}")
+
+    return {
+        "paired": True,
+        "session_id": req.session_id,
+        "ext_session_id": req.ext_session_id,
+        "extension_connected": req.ext_session_id in (_connected_extensions or {}),
     }

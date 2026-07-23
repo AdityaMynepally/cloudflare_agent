@@ -82,6 +82,33 @@
     #ext-status.disconnected .dot  { background: var(--red); }
     #ext-status.disconnected span  { color: #f1948a; }
 
+    /* ---- Pairing code pill ---- */
+    #pair-code-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 12px;
+      border-radius: 999px;
+      font-size: 0.78rem;
+      background: #2a2a2a;
+      border: 1px solid var(--border);
+      color: var(--gray);
+    }
+    #pair-code-pill code {
+      color: var(--white);
+      font-weight: 600;
+    }
+    #pair-code-pill button {
+      background: none;
+      border: 1px solid var(--border);
+      color: var(--gray);
+      border-radius: 6px;
+      padding: 1px 8px;
+      font-size: 0.72rem;
+      cursor: pointer;
+    }
+    #pair-code-pill button:hover { color: var(--white); border-color: var(--gray); }
+
     /* ---- Main card ---- */
     .card {
       background: var(--card-bg);
@@ -856,9 +883,15 @@
     />
     <div class="divider"></div>
     <span class="product-name">WebSentinel <span>AI</span></span>
-    <div id="ext-status" class="disconnected">
-      <span class="dot"></span>
-      <span id="ext-label">Extension: checking…</span>
+    <div style="margin-left:auto; display:flex; align-items:center; gap:10px;">
+      <div id="pair-code-pill">
+        Pairing code: <code id="pair-code-value"></code>
+        <button id="copy-pair-code" type="button">Copy</button>
+      </div>
+      <div id="ext-status" class="disconnected">
+        <span class="dot"></span>
+        <span id="ext-label">Extension: checking…</span>
+      </div>
     </div>
   </div>
 
@@ -1001,16 +1034,40 @@
   const dlPdf       = document.getElementById('download-pdf');
   const extStatus   = document.getElementById('ext-status');
   const extLabel    = document.getElementById('ext-label');
+  const pairCodeVal = document.getElementById('pair-code-value');
+  const copyPairBtn = document.getElementById('copy-pair-code');
+
+  /* ---------- Pairing code ---------- */
+  // SESSION_ID doubles as the pairing code: paste it into the extension
+  // popup once to route this browser tab's audits to that specific
+  // extension, instead of an arbitrary connected one (needed so multiple
+  // people can share one deployed backend without their audits crossing
+  // into each other's browsers).
+  pairCodeVal.textContent = SESSION_ID;
+  copyPairBtn.addEventListener('click', () => {
+    navigator.clipboard.writeText(SESSION_ID).then(() => {
+      copyPairBtn.textContent = 'Copied!';
+      setTimeout(() => { copyPairBtn.textContent = 'Copy'; }, 1500);
+    });
+  });
 
   /* ---------- Extension status ---------- */
   async function checkExt() {
     try {
-      const r = await fetch(`${API}/api/chat/extension-status`);
+      const r = await fetch(`${API}/api/chat/extension-status?session_id=${encodeURIComponent(SESSION_ID)}`);
       const d = await r.json();
-      extStatus.className = d.connected ? 'connected' : 'disconnected';
-      extLabel.textContent = d.connected
-        ? `Extension connected (${d.count})`
-        : 'Extension: not connected';
+      if (d.paired_and_connected) {
+        extStatus.className = 'connected';
+        extLabel.textContent = 'Extension paired ✓';
+      } else if (d.paired) {
+        extStatus.className = 'disconnected';
+        extLabel.textContent = 'Paired extension not connected';
+      } else {
+        extStatus.className = 'disconnected';
+        extLabel.textContent = d.connected
+          ? `Not paired (${d.count} extension(s) online)`
+          : 'Extension: not connected';
+      }
     } catch {
       extStatus.className = 'disconnected';
       extLabel.textContent = 'Extension: backend offline';

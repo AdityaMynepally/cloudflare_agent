@@ -6,7 +6,7 @@
  * 2. Popup messages: connection checks, reconnect
  */
 
-import { checkHealth } from '../lib/api-client.js';
+import { checkHealth, pairSession, getConfig } from '../lib/api-client.js';
 import { categorizeLinks } from '../lib/page-patterns.js';
 import { WSClient } from '../lib/ws-client.js';
 
@@ -49,6 +49,59 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   }
 });
 
+// ---- Auto-pairing with the deployed chat UI ----
+//
+// Rather than requiring the user to manually copy a pairing code from the
+// chat UI into the extension popup, watch for the moment a tab finishes
+// loading the SAME backendUrl this extension is already configured to talk
+// to (the chat UI is served from that origin) and read the pairing code
+// straight out of the page's own DOM (#pair-code-value, rendered by
+// ui/index.html) — no cross-context messaging ceremony needed, since the
+// extension already has <all_urls> host permission plus scripting access.
+// This means pairing "just happens" the instant a user with the extension
+// installed opens the chat page, on any of their own computers.
+async function tryAutoPair(tabId, tabUrl) {
+  try {
+    // Reuse the SAME default-fallback ('http://localhost:8000' when unset)
+    // that api-client.js and popup.js already use — reading storage directly
+    // here previously missed that default, so auto-pair silently no-opped
+    // for anyone who'd never explicitly saved a Backend URL in Options (the
+    // common case when just using the built-in localhost default).
+    const { backendUrl } = await getConfig();
+
+    let backendOrigin, tabOrigin;
+    try {
+      backendOrigin = new URL(backendUrl).origin;
+      tabOrigin = new URL(tabUrl).origin;
+    } catch {
+      return;
+    }
+    if (backendOrigin !== tabOrigin) return; // not our chat UI's page
+
+    const results = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => document.getElementById('pair-code-value')?.textContent?.trim() || null,
+    });
+    const code = results[0]?.result;
+    if (!code) return; // page loaded but isn't the chat UI (no pairing element)
+
+    const extSessionId = await getSessionId();
+    await pairSession(code, extSessionId);
+    chrome.storage.local.set({ pairedChatSessionId: code });
+    console.log('[Pair] Auto-paired with chat session:', code);
+  } catch (err) {
+    // Non-fatal — the manual "Pairing code" field in the popup remains a
+    // fallback if auto-pair can't complete for any reason.
+    console.warn('[Pair] Auto-pair attempt failed:', err.message || err);
+  }
+}
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.status === 'complete' && tab.url) {
+    tryAutoPair(tabId, tab.url);
+  }
+});
+
 // ---- Message handling from popup ----
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -74,6 +127,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'GET_WS_STATUS') {
     sendResponse({ wsConnected: wsClient.isConnected, sessionId: wsClient.sessionId });
     return false;
+  }
+
+  if (message.type === 'PAIR_SESSION') {
+    (async () => {
+      try {
+        const extSessionId = await getSessionId();
+        const result = await pairSession(message.chatSessionId, extSessionId);
+        // Remember locally so the popup can show "Paired with ..." on reopen —
+        // the backend is the source of truth for routing, this is cosmetic.
+        chrome.storage.local.set({ pairedChatSessionId: message.chatSessionId });
+        sendResponse({ ok: true, extSessionId, ...result });
+      } catch (err) {
+        sendResponse({ ok: false, error: err.message || String(err) });
+      }
+    })();
+    return true;
   }
 
   // Content script sends captured page data

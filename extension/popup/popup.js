@@ -8,6 +8,9 @@ const wsStatus = document.getElementById('ws-status');
 const settingsBtn = document.getElementById('settings-btn');
 const openChatBtn = document.getElementById('open-chat-btn');
 const reconnectBtn = document.getElementById('reconnect-btn');
+const pairCodeInput = document.getElementById('pair-code');
+const pairBtn = document.getElementById('pair-btn');
+const pairStatus = document.getElementById('pair-status');
 
 async function checkConnection() {
   statusDot.className = 'status-dot checking';
@@ -48,4 +51,37 @@ settingsBtn.addEventListener('click', () => {
   chrome.runtime.openOptionsPage();
 });
 
+pairBtn.addEventListener('click', () => {
+  const code = pairCodeInput.value.trim();
+  if (!code) {
+    pairStatus.style.color = '#c0392b';
+    pairStatus.textContent = 'Enter the pairing code shown in the chat UI first.';
+    return;
+  }
+  pairStatus.style.color = '#555';
+  pairStatus.textContent = 'Pairing...';
+  chrome.runtime.sendMessage({ type: 'PAIR_SESSION', chatSessionId: code }, (response) => {
+    if (response && response.ok) {
+      pairStatus.style.color = '#28a745';
+      pairStatus.textContent = response.extension_connected
+        ? `Paired with ${code}`
+        : `Paired with ${code} (extension will finish connecting shortly)`;
+    } else {
+      pairStatus.style.color = '#c0392b';
+      pairStatus.textContent = `Pairing failed: ${response?.error || 'unknown error'}`;
+    }
+  });
+});
+
+function loadSavedPairing() {
+  chrome.storage.local.get(['pairedChatSessionId'], (result) => {
+    if (result.pairedChatSessionId) {
+      pairCodeInput.value = result.pairedChatSessionId;
+      pairStatus.style.color = '#555';
+      pairStatus.textContent = `Last paired with ${result.pairedChatSessionId}`;
+    }
+  });
+}
+
+loadSavedPairing();
 checkConnection();
