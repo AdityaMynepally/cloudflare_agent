@@ -664,7 +664,7 @@ class AuditOrchestrator:
         return best_url, best_title or "Vehicle"
 
     async def _check_vdp_history_reports(
-        self, capture: dict, vdp_url: str, vdp_title: str, page_type: str
+        self, bridge, capture: dict, vdp_url: str, vdp_title: str, page_type: str
     ) -> dict:
         """Extract + verify history-report links for a single VDP capture.
 
@@ -680,12 +680,41 @@ class AuditOrchestrator:
         if widget_reports and not raw_reports["found"]:
             raw_reports = {"found": True, "count": len(widget_reports), "links": widget_reports}
 
+        verified: list = []
         if is_preowned and raw_reports["found"]:
             eligible = [r for r in raw_reports["links"] if r.get("href")]
             sample = random.sample(eligible, min(4, len(eligible)))
             verified = await verify_history_report_links(sample)
-        else:
-            verified = []
+
+            # Some report links/widgets have no normal navigable href (a
+            # "#"/javascript: trigger, or a class/img-based widget with no
+            # anchor at all) — verify_history_report_links() unconditionally
+            # marks those "not ok" since there's nothing to HTTP-check. Many
+            # of these actually work fine as an in-page modal, so before
+            # calling them broken, interactively click and check for a
+            # modal — a report that opens correctly that way counts as
+            # present, not broken. Capped at 2 per vehicle to bound audit time.
+            verified_hrefs = {r.get("href") for r in verified if r.get("href")}
+            needs_modal_check = [
+                r for r in raw_reports["links"]
+                if not r.get("href") or r.get("href") not in verified_hrefs
+            ]
+            for report in needs_modal_check[:2]:
+                try:
+                    result = await bridge.capture_history_report_check(
+                        vdp_url, href=report.get("href"), platform=report.get("platform", ""),
+                    )
+                except Exception as e:
+                    logger.warning(f"History report modal check failed (non-fatal): {e}")
+                    continue
+                if result.get("found") and result.get("modal_detected"):
+                    verified.append({
+                        **report,
+                        "status_code": None,
+                        "ok": True,
+                        "opens_new_tab": True,  # opens correctly (as a modal) — counts as present
+                        "modal_detected": True,
+                    })
 
         return build_history_reports_check(
             links, verified, is_preowned, vdp_url=vdp_url, vdp_title=vdp_title,
@@ -925,11 +954,26 @@ class AuditOrchestrator:
                 "status": "inventory",
             })
 
-            vehicle_url, vehicle_title = self._extract_vehicle_link(vdp_search_links, vdp_search_base)
+            # The PRIMARY VDP (shown as "VDP Type" alongside "SRP Type" in the
+            # Inventory Discovery card) must come from the SRP actually being
+            # audited — always try inv_links/inventory_url first. Previously
+            # this searched vdp_search_links/vdp_search_base first, which
+            # points at preowned_url whenever needs_preowned_nav fired (SRP is
+            # new/mixed/unknown + a separate used/CPO page was found) — so a
+            # "SRP Type: New Inventory" audit could end up showing "VDP Type:
+            # Certified Pre-Owned", a vehicle-type mismatch between the two
+            # cards. The pre-owned SRP is still visited (above) and still
+            # searched for EXTRA vehicles below — just no longer for this
+            # primary one.
+            vehicle_url, vehicle_title = self._extract_vehicle_link(inv_links, inventory_url)
+            vehicle_source_base = inventory_url
 
-            # Fallback: try the original SRP links if the preowned page didn't yield a VDP
+            # Fallback: only if the primary SRP itself has no findable vehicle
+            # link at all, fall back to whatever the pre-owned SRP found —
+            # better to show some VDP than none.
             if not vehicle_url and vdp_search_base != inventory_url:
-                vehicle_url, vehicle_title = self._extract_vehicle_link(inv_links, inventory_url)
+                vehicle_url, vehicle_title = self._extract_vehicle_link(vdp_search_links, vdp_search_base)
+                vehicle_source_base = vdp_search_base
 
             def _store_model_years_if_new(years):
                 if session.inventory_page_type in ("new", "mixed", "unknown") and years:
@@ -995,13 +1039,16 @@ class AuditOrchestrator:
             # --- Step 6: VDP categorization & analysis ---
             session.vdp_page_type = categorize_inventory_url(vehicle_url)
 
-            # If VDP URL is ambiguous, infer from the SRP we navigated from
+            # If VDP URL is ambiguous, infer from the SRP we actually found
+            # this vehicle on (vehicle_source_base — see above), not just
+            # whichever SRP happened to be visited last.
             if session.vdp_page_type == 'unknown':
-                if vdp_search_base == preowned_url and preowned_url:
+                if vehicle_source_base == preowned_url and preowned_url:
                     # We found this VDP from the pre-owned SRP — it's pre-owned
                     session.vdp_page_type = categorize_inventory_url(preowned_url) or 'used'
-                elif session.inventory_page_type in ('used', 'cpo'):
-                    # Main SRP is used/CPO, inherit that context
+                else:
+                    # Found from the primary SRP itself — inherit its condition,
+                    # keeping "SRP Type" and "VDP Type" consistent with each other.
                     session.vdp_page_type = session.inventory_page_type
 
             vdp_links         = vdp_capture.get("links", [])
@@ -1024,7 +1071,7 @@ class AuditOrchestrator:
             is_preowned = session.vdp_page_type in ("used", "cpo", "mixed")
 
             vehicle_checks = [await self._check_vdp_history_reports(
-                vdp_capture, vehicle_url, vdp_title, session.vdp_page_type,
+                bridge, vdp_capture, vehicle_url, vdp_title, session.vdp_page_type,
             )]
             visited_vdp_urls = {vehicle_url}
 
@@ -1061,7 +1108,7 @@ class AuditOrchestrator:
                     )
                     cand_page_type = categorize_inventory_url(cand_url)
                     vehicle_checks.append(await self._check_vdp_history_reports(
-                        cand_capture, cand_url, cand_title_final, cand_page_type,
+                        bridge, cand_capture, cand_url, cand_title_final, cand_page_type,
                     ))
                     remaining -= 1
 
@@ -1572,7 +1619,10 @@ class AuditOrchestrator:
             bi_hours = binfo.get("hours") or {}
             if bi_name or bi_addr or bi_hours:
                 if session.business_info_website is None:
-                    session.business_info_website = {"name": bi_name, "address": bi_addr, "hours": bi_hours}
+                    session.business_info_website = {
+                        "name": bi_name, "address": bi_addr, "hours": bi_hours,
+                        "source_page": page_url,
+                    }
                 else:
                     existing = session.business_info_website
                     if not existing.get("name") and bi_name:

@@ -223,3 +223,15 @@ class ExtensionBridge:
         if url:
             cmd["url"] = url
         return await self.send_with_retry(cmd)
+
+    async def capture_history_report_check(
+        self, url: Optional[str] = None, href: Optional[str] = None, platform: str = "",
+    ) -> dict:
+        cmd: dict = {"type": "capture_history_report_check"}
+        if url:
+            cmd["url"] = url
+        if href:
+            cmd["href"] = href
+        if platform:
+            cmd["platform"] = platform
+        return await self.send_with_retry(cmd)

@@ -59,26 +59,41 @@ async def _check_url_statuses(
     base_domain = urlparse(base_url).netloc
     semaphore = asyncio.Semaphore(max_concurrent)
 
+    async def _check_once(client: httpx.AsyncClient, url: str) -> int:
+        resp = await client.head(url)
+        if resp.status_code in (403, 404, 405):
+            # Some servers (esp. ASP.NET/.aspx pages) don't implement
+            # HEAD correctly and return 404 even though the page exists —
+            # confirm with GET before calling it broken.
+            resp = await client.get(url)
+        return resp.status_code
+
     async def check_one(url: str) -> tuple[str, int]:
         async with semaphore:
-            try:
-                async with httpx.AsyncClient(
-                    timeout=timeout,
-                    follow_redirects=True,
-                    verify=False,
-                    headers=_BROWSER_HEADERS,
-                ) as client:
-                    resp = await client.head(url)
-                    if resp.status_code in (403, 404, 405):
-                        # Some servers (esp. ASP.NET/.aspx pages) don't implement
-                        # HEAD correctly and return 404 even though the page exists —
-                        # confirm with GET before calling it broken.
-                        resp = await client.get(url)
-                    return url, resp.status_code
-            except httpx.TimeoutException:
-                return url, 0
-            except Exception:
-                return url, 0
+            last_status = 0
+            for attempt in range(2):
+                try:
+                    async with httpx.AsyncClient(
+                        timeout=timeout,
+                        follow_redirects=True,
+                        verify=False,
+                        headers=_BROWSER_HEADERS,
+                    ) as client:
+                        status = await _check_once(client, url)
+                    if not _is_broken(status):
+                        return url, status  # confirmed OK — no need to retry
+                    last_status = status
+                except (httpx.TimeoutException, Exception):
+                    last_status = 0
+                if attempt == 0:
+                    await asyncio.sleep(1.0)  # brief backoff before retrying
+
+            # Only report a status confirmed broken on the retry too. A
+            # single transient failure — a burst of concurrent checks against
+            # a slow/lightly bot-protected site can produce one even for a
+            # link that opens fine in a real browser — should not be enough
+            # to flag something as broken.
+            return url, last_status
 
     results = await asyncio.gather(*[check_one(u) for u in urls])
     return dict(results)

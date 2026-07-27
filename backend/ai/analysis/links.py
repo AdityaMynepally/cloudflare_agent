@@ -81,40 +81,52 @@ async def check_links(
 
     semaphore = asyncio.Semaphore(max_concurrent)
 
+    async def _check_once(client: httpx.AsyncClient, url: str):
+        """Single check attempt. Returns (status_code, reason) or None if OK."""
+        resp = await client.head(url)
+        # HEAD blocked or unsupported by server (some ASP.NET / dynamic
+        # pages 404 on HEAD but 200 on GET) → retry with GET
+        if resp.status_code in (403, 404, 405):
+            resp = await client.get(url)
+        # Only 404 / 410 are definitively broken.
+        # 403 = bot-blocked (page exists), 5xx = transient server error
+        if resp.status_code in (404, 410):
+            return resp.status_code, "Not found"
+        if resp.status_code >= 500:
+            return resp.status_code, "Server error"
+        return None
+
     async def check_one(url: str) -> Optional[dict]:
         async with semaphore:
-            try:
-                async with httpx.AsyncClient(
-                    timeout=timeout,
-                    follow_redirects=True,
-                    verify=False,
-                    headers=_BROWSER_HEADERS,
-                ) as client:
-                    resp = await client.head(url)
+            last: Optional[dict] = None
+            for attempt in range(2):
+                try:
+                    async with httpx.AsyncClient(
+                        timeout=timeout,
+                        follow_redirects=True,
+                        verify=False,
+                        headers=_BROWSER_HEADERS,
+                    ) as client:
+                        result = await _check_once(client, url)
+                    if result is None:
+                        return None  # confirmed OK — no need to retry
+                    last = {"url": url, "status_code": result[0], "reason": result[1]}
+                except httpx.TimeoutException:
+                    last = {"url": url, "status_code": 0, "reason": "timeout"}
+                except Exception as e:
+                    last = {"url": url, "status_code": 0, "reason": str(e)[:80]}
+                if attempt == 0:
+                    await asyncio.sleep(1.0)  # brief backoff before retrying
 
-                    # HEAD blocked or unsupported by server (some ASP.NET / dynamic
-                    # pages 404 on HEAD but 200 on GET) → retry with GET
-                    if resp.status_code in (403, 404, 405):
-                        resp = await client.get(url)
-
-                    # Only 404 / 410 are definitively broken.
-                    # 403 = bot-blocked (page exists), 5xx = transient server error
-                    if resp.status_code in (404, 410):
-                        return {
-                            "url": url,
-                            "status_code": resp.status_code,
-                            "reason": "Not found",
-                        }
-                    if resp.status_code >= 500:
-                        return {
-                            "url": url,
-                            "status_code": resp.status_code,
-                            "reason": "Server error",
-                        }
-            except httpx.TimeoutException:
-                return {"url": url, "status_code": 0, "reason": "timeout"}
-            except Exception as e:
-                return {"url": url, "status_code": 0, "reason": str(e)[:80]}
+            # Only report a CONFIRMED 404/410/5xx (reproduced on the retry) as
+            # broken. A link that only ever timed out / errored — never got a
+            # clean HTTP response on either attempt — is not confirmed broken:
+            # a burst of concurrent checks against a slow or lightly
+            # bot-protected site can produce exactly this kind of transient
+            # failure even though the page opens fine in a real browser.
+            # Silently drop those instead of flagging a false positive.
+            if last and (last["status_code"] in (404, 410) or last["status_code"] >= 500):
+                return last
             return None
 
     results = await asyncio.gather(*[check_one(url) for url in internal_links])

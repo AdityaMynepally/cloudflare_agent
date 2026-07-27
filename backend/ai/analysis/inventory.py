@@ -168,44 +168,76 @@ async def check_inventory_graphic_links(
 def extract_history_reports(links: list) -> dict:
     """Scan page links for vehicle history report links (Carfax, AutoCheck, NMVTIS).
 
-    Matches against href (domain OR internal redirect path like /autocheck/) and
-    link text / aria-label keywords so internal redirect URLs are caught.
+    Matches against href (domain OR internal redirect path like /autocheck/) and,
+    only as a fallback, link text / aria-label keywords.
 
     Returns {found, count, links: [{platform, href, text, opens_new_tab}]}
     """
-    reports = []
-    seen: set = set()
-
-    def _detect_platform(href_lower: str, text_lower: str) -> Optional[str]:
+    def _detect_platform_strong(href_lower: str) -> Optional[str]:
+        """Only trust an actual known report-provider domain/redirect path."""
         for provider in HISTORY_PROVIDERS:
             if any(p in href_lower for p in provider['patterns']):
                 return provider['platform']
-        # Fall back to text keywords
+        return None
+
+    def _detect_platform_weak(text_lower: str) -> Optional[str]:
         for kw in ['carfax', 'autocheck', 'nmvtis', 'vehicle history', 'history report', 'accident report']:
             if kw in text_lower:
-                if 'carfax' == kw:           return 'Carfax'
-                if 'autocheck' == kw:         return 'AutoCheck'
-                if 'nmvtis' == kw:            return 'NMVTIS'
+                if kw == 'carfax':     return 'Carfax'
+                if kw == 'autocheck':  return 'AutoCheck'
+                if kw == 'nmvtis':     return 'NMVTIS'
                 return 'Vehicle History'
         return None
+
+    strong_reports = []
+    weak_reports = []
+    seen_strong_hrefs: set = set()
+    seen_weak_hrefs: set = set()
+    # Dealer VDPs commonly show the SAME report twice — a badge/image-only
+    # link near the vehicle title AND a separate "View History Report"
+    # button further down — each with a different tracking-parameterized
+    # carfax.com/autocheck.com URL. Both are genuinely real (strong) matches,
+    # so the href-based dedup above doesn't catch them; only the first real
+    # link per PLATFORM is kept, since a vehicle realistically has at most
+    # one report per provider.
+    seen_strong_platforms: set = set()
 
     for link in links:
         original_href = link.get('href', '') or ''
         href_lower    = original_href.lower()
         text_lower    = (link.get('text', '') or '').lower()
 
-        if original_href in seen:
+        if original_href in seen_strong_hrefs or original_href in seen_weak_hrefs:
             continue
 
-        platform = _detect_platform(href_lower, text_lower)
-        if platform:
-            seen.add(original_href)
-            reports.append({
-                'platform': platform,
-                'href': original_href,
-                'text': (link.get('text', '') or '')[:80],
-                'opens_new_tab': link.get('opens_new_tab', False),
-            })
+        entry = {
+            'platform': None,
+            'href': original_href,
+            'text': (link.get('text', '') or '')[:80],
+            'opens_new_tab': link.get('opens_new_tab', False),
+        }
+
+        strong_platform = _detect_platform_strong(href_lower)
+        if strong_platform:
+            seen_strong_hrefs.add(original_href)
+            if strong_platform in seen_strong_platforms:
+                continue
+            seen_strong_platforms.add(strong_platform)
+            strong_reports.append({**entry, 'platform': strong_platform})
+            continue
+
+        weak_platform = _detect_platform_weak(text_lower)
+        if weak_platform:
+            seen_weak_hrefs.add(original_href)
+            weak_reports.append({**entry, 'platform': weak_platform})
+
+    # Text-only matches are a common source of false duplicates — e.g. a
+    # "Carfax 1-Owner" filter badge that merely mentions the word "carfax"
+    # but actually links back to the inventory search page, not a real
+    # report. Once we have even one real report-domain match, ignore every
+    # text-only match entirely rather than reporting both as separate
+    # "history reports" for the same vehicle.
+    reports = strong_reports if strong_reports else weak_reports
 
     return {'found': bool(reports), 'count': len(reports), 'links': reports}
 
@@ -249,6 +281,13 @@ def build_history_reports_check(
 ) -> dict:
     """Combine raw and verified history report info into a summary dict for one VDP."""
     raw = extract_history_reports(links)
+    # Once modal-interaction checks have run (see orchestrator's
+    # _check_vdp_history_reports), verified_reports may have corrected
+    # `ok`/`opens_new_tab` for entries that don't HTTP-verify but do open
+    # correctly in a modal — use that corrected view consistently for the
+    # new-tab summary too, not the pre-check `raw` list, or a report we just
+    # confirmed opens fine in a modal would still get flagged "missing new tab".
+    source = verified_reports if verified_reports else raw['links']
     broken_links = [r for r in verified_reports if not r.get('ok')]
     return {
         'vdp_url': vdp_url,
@@ -256,10 +295,10 @@ def build_history_reports_check(
         'is_preowned': is_preowned,
         'found': raw['found'],
         'count': raw['count'],
-        'links': verified_reports if verified_reports else raw['links'],
+        'links': source,
         'all_work': all(r.get('ok') for r in verified_reports) if verified_reports else None,
-        'all_new_tab': all(r.get('opens_new_tab') for r in raw['links']) if raw['links'] else None,
-        'missing_new_tab': [r for r in raw['links'] if not r.get('opens_new_tab')],
+        'all_new_tab': all(r.get('opens_new_tab') for r in source) if source else None,
+        'missing_new_tab': [r for r in source if not r.get('opens_new_tab')],
         'broken_links': broken_links,
     }
 

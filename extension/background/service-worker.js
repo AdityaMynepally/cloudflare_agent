@@ -1065,6 +1065,70 @@ wsClient.onCommand(async (command) => {
       });
     }
 
+    if (command.type === 'capture_history_report_check') {
+      // Some vehicle-history-report links/widgets (Carfax/AutoCheck/etc.)
+      // don't have a normal navigable href — a "#"/javascript: trigger, or a
+      // class/img-based widget with no wrapping anchor at all — so a plain
+      // HTTP check can never confirm they work. Click whatever we can find
+      // (by exact href match, or by platform-name widget selector as a
+      // fallback) and check whether a modal appears; a report that opens
+      // correctly in a modal should count as present, not broken.
+      const tabId = await getOrCreateAgentTab();
+      if (command.url) {
+        await navigateTab(tabId, command.url);
+        await waitForTabLoad(tabId);
+        await sleep(1500);
+      }
+
+      const results = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: async (href, platform) => {
+          function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+          function countModalLikeVisible() {
+            return [...document.querySelectorAll('[role="dialog"], .modal, [class*="modal" i], iframe')]
+              .filter((el) => {
+                const r = el.getBoundingClientRect();
+                const style = window.getComputedStyle(el);
+                return r.width > 300 && r.height > 300 &&
+                       style.display !== 'none' && style.visibility !== 'hidden';
+              }).length;
+          }
+
+          const platformLower = (platform || '').toLowerCase();
+          let target = null;
+          if (href) {
+            target = [...document.querySelectorAll('a[href]')].find((a) => a.href === href);
+          }
+          if (!target && platformLower) {
+            target = document.querySelector(
+              `[class*="${platformLower}" i], img[src*="${platformLower}" i], img[alt*="${platformLower}" i]`
+            );
+            if (target && target.tagName === 'IMG') {
+              target = target.closest('a') || target;
+            }
+          }
+          if (!target) return { found: false };
+
+          const beforeCount = countModalLikeVisible();
+          target.scrollIntoView({ block: 'center' });
+          target.click();
+          await sleep(2000);
+          const afterCount = countModalLikeVisible();
+
+          return { found: true, modal_detected: afterCount > beforeCount };
+        },
+        args: [command.href || null, command.platform || ''],
+      });
+
+      const checkResult = results[0]?.result || { found: false };
+      const screenshot = await captureScreenshot(tabId);
+      wsClient.sendCaptureResult({
+        type: 'history_report_check_result',
+        ...checkResult,
+        screenshot_base64: screenshot,
+      });
+    }
+
   } catch (err) {
     console.error('[WS] Command error:', command.type, err);
     wsClient.sendCaptureResult({ error: err.message, command_type: command.type });

@@ -107,12 +107,26 @@ async def fetch_gbp_data(
             hours_dict[day_cap] = time_str
             weekday_text.append(f"{day_cap}: {time_str}")
 
-    maps_url = (
-        result.get("link") or
-        result.get("place_id_search") or
-        (f"https://www.google.com/maps/place/?q=place_id:{result.get('place_id')}"
-         if result.get("place_id") else "")
-    )
+    # Build a real, user-facing Google Maps URL. SerpAPI's "link" field is
+    # usually absent, and "place_id_search" is a SerpAPI-internal API endpoint
+    # (serpapi.com/search.json?...) — NOT a Google Maps page. Blindly trusting
+    # either field name previously sent users to a raw SerpAPI JSON payload
+    # when they clicked "View on Google Maps". Only ever use a field whose
+    # value is demonstrably a real Google Maps URL; otherwise always build one
+    # from place_id (or GPS coordinates as a last resort), never from
+    # place_id_search or any other SerpAPI-domain link.
+    def _is_real_maps_url(url: str) -> bool:
+        return bool(url) and ("google.com/maps" in url or "maps.google.com" in url)
+
+    candidate_link = result.get("link") or ""
+    if _is_real_maps_url(candidate_link):
+        maps_url = candidate_link
+    elif result.get("place_id"):
+        maps_url = f"https://www.google.com/maps/place/?q=place_id:{result['place_id']}"
+    else:
+        gps = result.get("gps_coordinates") or {}
+        lat, lng = gps.get("latitude"), gps.get("longitude")
+        maps_url = f"https://www.google.com/maps/search/?api=1&query={lat},{lng}" if lat and lng else ""
 
     return {
         "place_id":          result.get("place_id", ""),

@@ -309,16 +309,38 @@
       const HR_HREF_FRAGMENTS = ['carfax.com', 'autocheck.com', 'nmvtis.gov', '/carfax/', '/autocheck/', '/vehicle-history/', '/history-report/'];
       const HR_TEXT_KEYWORDS  = ['carfax', 'autocheck', 'vehicle history', 'history report', 'accident report', 'nmvtis'];
 
-      function detectHistoryPlatform(href, text, imgAlt, imgSrc) {
-        const h = href.toLowerCase(), t = text.toLowerCase(), ia = imgAlt.toLowerCase(), is_ = imgSrc.toLowerCase();
-        if (h.includes('carfax')   || t.includes('carfax')     || ia.includes('carfax')    || is_.includes('carfax'))    return 'Carfax';
-        if (h.includes('autocheck')|| t.includes('autocheck')  || ia.includes('autocheck') || is_.includes('autocheck')) return 'AutoCheck';
-        if (h.includes('nmvtis')   || t.includes('nmvtis')     || ia.includes('nmvtis')    || is_.includes('nmvtis'))    return 'NMVTIS';
+      // Only a real report-provider domain/redirect-path or a matching image
+      // src/alt counts as a STRONG signal. Visible text alone (e.g. a
+      // "Carfax 1-Owner" filter badge that merely mentions the word but
+      // links back to the inventory search page) is a WEAK signal and a
+      // common source of false duplicates — 2 "reports" detected for a
+      // vehicle that only has 1 real one. Strong matches always win.
+      function detectHistoryPlatformStrong(href, imgAlt, imgSrc) {
+        const h = href.toLowerCase(), ia = imgAlt.toLowerCase(), is_ = imgSrc.toLowerCase();
+        if (h.includes('carfax')    || ia.includes('carfax')    || is_.includes('carfax'))    return 'Carfax';
+        if (h.includes('autocheck') || ia.includes('autocheck') || is_.includes('autocheck')) return 'AutoCheck';
+        if (h.includes('nmvtis')    || ia.includes('nmvtis')    || is_.includes('nmvtis'))    return 'NMVTIS';
+        return null;
+      }
+      function detectHistoryPlatformWeak(text) {
+        const t = text.toLowerCase();
+        if (t.includes('carfax'))    return 'Carfax';
+        if (t.includes('autocheck')) return 'AutoCheck';
+        if (t.includes('nmvtis'))    return 'NMVTIS';
         if (t.includes('vehicle history') || t.includes('history report') || t.includes('accident report')) return 'Vehicle History';
         return null;
       }
 
+      const strongReports = [];
+      const weakReports = [];
       const seenHrefs = new Set();
+      // Dealer VDPs commonly show the SAME report twice — a badge/image-only
+      // link near the vehicle title AND a separate "View History Report"
+      // button further down — each with a different tracking-parameterized
+      // carfax.com/autocheck.com URL. Both are genuinely real (strong)
+      // matches, so href-based dedup alone doesn't catch them; only the
+      // first real link per PLATFORM is kept.
+      const seenStrongPlatforms = new Set();
       for (const a of document.querySelectorAll('a[href]')) {
         const href     = a.href || '';
         const hrefL    = href.toLowerCase();
@@ -327,23 +349,35 @@
         const imgAlt   = img ? (img.getAttribute('alt') || '') : '';
         const imgSrc   = img ? (img.src || '') : '';
 
+        if (seenHrefs.has(href)) continue;
+
         const hrefMatch = HR_HREF_FRAGMENTS.some(p => hrefL.includes(p));
-        const textMatch = HR_TEXT_KEYWORDS.some(p => text.toLowerCase().includes(p) || (a.getAttribute('aria-label') || '').toLowerCase().includes(p));
         const imgMatch  = img && ['carfax', 'autocheck', 'nmvtis'].some(p => imgAlt.toLowerCase().includes(p) || imgSrc.toLowerCase().includes(p));
 
-        if ((hrefMatch || textMatch || imgMatch) && !seenHrefs.has(href)) {
-          const platform = detectHistoryPlatform(hrefL, text, imgAlt, imgSrc);
+        const entry = {
+          href,
+          text: text.substring(0, 80),
+          opens_new_tab: a.getAttribute('target') === '_blank',
+        };
+
+        if (hrefMatch || imgMatch) {
+          const platform = detectHistoryPlatformStrong(hrefL, imgAlt, imgSrc);
           if (platform) {
             seenHrefs.add(href);
-            data.history_reports.push({
-              platform,
-              href,
-              text: text.substring(0, 80),
-              opens_new_tab: a.getAttribute('target') === '_blank',
-            });
+            if (seenStrongPlatforms.has(platform)) continue;
+            seenStrongPlatforms.add(platform);
+            strongReports.push({ platform, ...entry });
+            continue;
           }
         }
+
+        const textMatch = HR_TEXT_KEYWORDS.some(p => text.toLowerCase().includes(p) || (a.getAttribute('aria-label') || '').toLowerCase().includes(p));
+        if (textMatch) {
+          const platform = detectHistoryPlatformWeak(text);
+          if (platform) { seenHrefs.add(href); weakReports.push({ platform, ...entry }); }
+        }
       }
+      data.history_reports.push(...(strongReports.length ? strongReports : weakReports));
       // Fallback: check for embedded widgets (class/img with no parent anchor)
       if (!data.history_reports.length) {
         const widget = document.querySelector(
@@ -529,37 +563,79 @@
       '.top-nav', '.header-nav', '#mainmenu', '.main-menu',
     ];
 
-    const seenNavs = new Set();
-    const hrefCounts = {};
-    const allLinks = [];
+    function isRealNavHref(href) {
+      if (!href || href.startsWith('javascript:') || href.startsWith('tel:') || href.startsWith('mailto:')) return false;
+      try {
+        const u = new URL(href);
+        if (u.hash && (u.pathname === '/' || u.pathname === '') && !u.search) return false;
+      } catch { return false; }
+      return true;
+    }
 
+    // 1. Curated selectors — fast path for sites using conventional nav markup.
+    const candidates = [];
+    const seenEls = new Set();
     for (const sel of NAV_SELECTORS) {
       try {
-        for (const nav of document.querySelectorAll(sel)) {
-          if (seenNavs.has(nav)) continue;
-          seenNavs.add(nav);
-          for (const link of nav.querySelectorAll('a[href]')) {
-            const href = link.href || '';
-            if (!href || href.startsWith('javascript:') || href.startsWith('tel:') || href.startsWith('mailto:')) continue;
-            // Skip pure anchor links
-            try {
-              const u = new URL(href);
-              if (u.hash && (u.pathname === '/' || u.pathname === '') && !u.search) continue;
-            } catch { continue; }
-
-            const text = (link.getAttribute('aria-label') || link.textContent || '').trim().substring(0, 100);
-            hrefCounts[href] = (hrefCounts[href] || 0) + 1;
-            if (hrefCounts[href] === 1) {
-              allLinks.push({ href, text, location: sel });
-            } else {
-              const existing = allLinks.find(l => l.href === href);
-              if (existing) existing.occurrences = (existing.occurrences || 1) + 1;
-            }
-          }
+        for (const el of document.querySelectorAll(sel)) {
+          if (seenEls.has(el)) continue;
+          seenEls.add(el);
+          candidates.push(el);
         }
       } catch (_) {}
     }
-    return allLinks.slice(0, 60);
+
+    // 2. Heuristic fallback — many dealer platforms (Dealer.com/DDC etc.) use
+    // custom container classes like "navbar-nav"/"ddc-mega-menu-nav"/
+    // "header-navigation" that don't match any curated selector above, which
+    // previously meant only 1 stray link (or a handful) got captured instead
+    // of the real 50-80-item mega-menu. Scan for any element whose class/id
+    // mentions "nav" or "menu" with at least 3 links — real primary navs
+    // reliably have far more links than any secondary utility bar.
+    try {
+      let scanned = 0;
+      for (const el of document.querySelectorAll('[class], [id]')) {
+        if (scanned++ > 2000) break; // defensive cap on pathologically large DOMs
+        if (seenEls.has(el) || el.tagName === 'A') continue;
+        const cls = (typeof el.className === 'string' ? el.className : '').toLowerCase();
+        const id = (el.id || '').toLowerCase();
+        if (!(cls.includes('nav') || cls.includes('menu') || id.includes('nav') || id.includes('menu'))) continue;
+        if (el.querySelectorAll('a[href]').length < 3) continue;
+        seenEls.add(el);
+        candidates.push(el);
+      }
+    } catch (_) {}
+
+    // Pick the SINGLE container with the most distinct-href links — reliably
+    // the true primary nav, since mega-menus commonly render every submenu
+    // item in the static DOM (just hidden via CSS until hover/focus), so a
+    // plain query already captures everything without needing to simulate
+    // hover interactions.
+    let bestRawLinks = [];
+    let bestDistinctCount = 0;
+    for (const el of candidates) {
+      const links = [...el.querySelectorAll('a[href]')].filter(a => isRealNavHref(a.href));
+      const distinctCount = new Set(links.map(a => a.href)).size;
+      if (distinctCount > bestDistinctCount) {
+        bestDistinctCount = distinctCount;
+        bestRawLinks = links;
+      }
+    }
+
+    const hrefCounts = {};
+    const allLinks = [];
+    for (const link of bestRawLinks) {
+      const href = link.href;
+      const text = (link.getAttribute('aria-label') || link.textContent || '').trim().substring(0, 100);
+      hrefCounts[href] = (hrefCounts[href] || 0) + 1;
+      if (hrefCounts[href] === 1) {
+        allLinks.push({ href, text });
+      } else {
+        const existing = allLinks.find(l => l.href === href);
+        if (existing) existing.occurrences = (existing.occurrences || 1) + 1;
+      }
+    }
+    return allLinks.slice(0, 80);
   }
 
   // ---- Sprint 5: Header Logo Check ----
@@ -765,7 +841,13 @@
         for (const spec of [].concat(item.openingHoursSpecification)) {
           for (const raw of [].concat(spec.dayOfWeek || [])) {
             const day = raw.replace(/https?:\/\/schema\.org\//i, '');
-            if (day) hours[day] = `${spec.opens || ''}-${spec.closes || ''}`;
+            if (!day) continue;
+            // Some sites represent a closed day by omitting opens/closes
+            // entirely rather than an explicit marker — without this check
+            // that produced a bogus "-" string (both sides empty), which
+            // downstream compared as different from GBP's "Closed" and
+            // surfaced as a false hours discrepancy.
+            hours[day] = (spec.opens && spec.closes) ? `${spec.opens}-${spec.closes}` : 'Closed';
           }
         }
       }
@@ -871,7 +953,16 @@
       function findTime(el, elText) {
         let hm = HOURS_RE.exec(elText);
         if (hm) return hm;
-        // Check parent's full text (e.g. <tr> containing a day cell + time cell)
+        // Check parent's full text (e.g. <tr> containing a day cell + time cell
+        // as separate siblings) — but ONLY when `el` is itself a narrow cell.
+        // When `el` is already a <tr> (the whole row matched the day regex
+        // directly, e.g. "Sunday Closed" as one row's combined text), its own
+        // text already includes everything in that row — widening further
+        // would reach the shared <tbody>/<table> spanning EVERY other day's
+        // row too, and risks matching a DIFFERENT day's hours as if they were
+        // this one's (confirmed: a closed Sunday row picked up Monday's hours
+        // this way before this guard was added).
+        if (el.tagName === 'TR') return null;
         const parentText = el.parentElement
           ? (el.parentElement.textContent || '').trim().replace(/\s+/g, ' ')
           : '';
@@ -881,6 +972,11 @@
 
       function isClosed(el, elText) {
         if (/closed/i.test(elText)) return true;
+        // Same leak risk as findTime() above: once `el` is already a <tr>,
+        // its own text is complete — widening to the shared parent can pick
+        // up the word "closed" from a DIFFERENT day's row instead, marking
+        // every day in the table closed just because one of them is.
+        if (el.tagName === 'TR') return false;
         const parentText = el.parentElement
           ? (el.parentElement.textContent || '').trim().replace(/\s+/g, ' ')
           : '';
@@ -917,9 +1013,27 @@
       }
 
       // Include tr so table-row text is scanned even when day/time are in separate cells
+      const ALL_DAY_NAMES_RE = /\b(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\b/gi;
       for (const el of document.querySelectorAll('tr, td, li, div, p, span, dt, dd, th')) {
         const text = (el.textContent || '').trim().replace(/\s+/g, ' ');
         if (text.length > 200) continue;
+
+        // Skip elements whose collapsed text mentions MORE than 2 distinct
+        // days — e.g. a wrapping "panel-body"/"panel-collapse" div containing
+        // an ENTIRE week's rows concatenated into one string ("Monday
+        // 8:30AM-8:00PM Tuesday ... Sunday Closed"). Such an element still
+        // matches the day-name-at-the-start regexes below purely because the
+        // string HAPPENS to start with a day name, but any "closed"/hours
+        // found in it may actually belong to a totally different day later
+        // in that same concatenated string (confirmed: this let a closed
+        // Sunday leak into Monday's result). A real single-day row mentions
+        // its one day only; a real day-RANGE row ("Mon – Fri") mentions
+        // exactly two (its start + end) — anything mentioning more is a
+        // multi-row container, not a row itself.
+        const distinctDaysMentioned = new Set(
+          (text.match(ALL_DAY_NAMES_RE) || []).map((d) => d.toLowerCase())
+        ).size;
+        if (distinctDaysMentioned > 2) continue;
 
         // Try to match a day range: "Mon – Fri" / "Monday - Friday" / "Mon-Fri"
         const RANGE_RE = /^(Mon(?:day)?|Tue(?:sday)?|Wed(?:nesday)?|Thu(?:rsday)?|Fri(?:day)?|Sat(?:urday)?|Sun(?:day)?)\s*[-–]\s*(Mon(?:day)?|Tue(?:sday)?|Wed(?:nesday)?|Thu(?:rsday)?|Fri(?:day)?|Sat(?:urday)?|Sun(?:day)?)\b/i;
@@ -930,15 +1044,22 @@
           const endDay   = resolveDay(rangeMatch[2]);
           if (startDay && endDay) {
             const days = expandDayRange(startDay, endDay);
-            const hm = findTime(el, text);
-            const closed = !hm && isClosed(el, text);
+            // Check "closed" FIRST, using only this row's own (already-collapsed)
+            // text — findTime()'s fallback climbs to el.parentElement when the
+            // row itself has no digits (e.g. "Sunday Closed"), and that parent
+            // is often a shared <tbody>/<table> containing EVERY day's row. If
+            // we call findTime() before ruling out "closed", a closed day can
+            // silently pick up a DIFFERENT day's hours (e.g. Monday's) as the
+            // first digit-match found anywhere in that wider shared text.
+            const closed = isClosed(el, text);
+            const hm = closed ? null : findTime(el, text);
             for (const day of days) {
               if (domHours[day]) continue;
-              if (hm) {
+              if (closed) {
+                domHours[day] = 'Closed';
+              } else if (hm) {
                 domHours[day] = `${hm[1].trim()}-${hm[2].trim()}`;
                 info.raw_hours_text.push(text.substring(0, 100));
-              } else if (closed) {
-                domHours[day] = 'Closed';
               }
             }
             continue;
@@ -952,15 +1073,24 @@
         const SINGLE_DAY_RE = /^(Mon(?:day)?|Tue(?:sday)?|Wed(?:nesday)?|Thu(?:rsday)?|Fri(?:day)?|Sat(?:urday)?|Sun(?:day)?)(?:[\s:]|$)/i;
         const singleMatch = SINGLE_DAY_RE.exec(text);
         if (!singleMatch) continue;
+        // A genuine single-day row/cell mentions its own day only — if a
+        // second distinct day name also appears (but didn't form a proper
+        // "Mon – Fri" range above), this is still some multi-day container.
+        if (distinctDaysMentioned > 1) continue;
         if (isExcludedDept(el)) continue;
         const dayFound = resolveDay(singleMatch[1]);
         if (!dayFound || domHours[dayFound]) continue;
-        const hm = findTime(el, text);
-        if (hm) {
-          domHours[dayFound] = `${hm[1].trim()}-${hm[2].trim()}`;
-          info.raw_hours_text.push(text.substring(0, 100));
-        } else if (isClosed(el, text)) {
+        // Same reordering as the range branch above — check "closed" using
+        // this element's own text BEFORE calling findTime(), whose parent-
+        // widening fallback can otherwise leak a different day's hours in.
+        if (isClosed(el, text)) {
           domHours[dayFound] = 'Closed';
+        } else {
+          const hm = findTime(el, text);
+          if (hm) {
+            domHours[dayFound] = `${hm[1].trim()}-${hm[2].trim()}`;
+            info.raw_hours_text.push(text.substring(0, 100));
+          }
         }
       }
     }

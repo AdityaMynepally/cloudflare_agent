@@ -1339,6 +1339,13 @@
 
     html += `<div class="gbp-row">`;
 
+    // Source attribution — where each side of the comparison actually came
+    // from, so a discrepancy can be manually double-checked against its origin.
+    const webSourceNote = bw.source_page
+      ? `<a href="${escHtml(bw.source_page)}" target="_blank" rel="noopener" style="color:var(--blue)">${escHtml(truncUrl(bw.source_page))}</a>`
+      : 'website page';
+    const gbpSourceNote = 'Google Maps listing (via SerpAPI)';
+
     // Address comparison card
     if (ac) {
       const cls  = ac.match === true ? 'match' : ac.match === false ? 'mismatch' : 'neutral';
@@ -1350,7 +1357,8 @@
           <div class="gbp-card-body">
             <span class="${statusCls}">${icon} ${ac.match === true ? 'Addresses match' : ac.match === false ? 'Address mismatch' : 'Unable to compare'}</span><br>
             <b>Website:</b> ${escHtml(ac.website || 'Not found')}<br>
-            <b>GBP:</b> ${escHtml(ac.gbp || 'Not found')}
+            <b>GBP:</b> ${escHtml(ac.gbp || 'Not found')}<br>
+            <small style="color:var(--gray)">Source — Website: ${webSourceNote} · GBP: ${gbpSourceNote}</small>
           </div>
         </div>`;
     }
@@ -1388,6 +1396,7 @@
                 }).join('')}
               </tbody>
             </table>
+            <small style="color:var(--gray)">Source — Website: ${webSourceNote} · GBP: ${gbpSourceNote}</small>
           </div>
         </div>`;
     }
@@ -1762,7 +1771,6 @@
   /* ---------- Sprint 6: Inventory Checks ---------- */
   function renderInventoryChecks(full) {
     const invType          = full.inventory_page_type || '';
-    const vdpType          = full.vdp_page_type || '';
     const invBrokenLinks   = full.inventory_broken_links   || [];
     const invCheckedLinks  = full.inventory_checked_links  || [];
     const vdpBrokenLinks   = full.vdp_broken_links         || [];
@@ -1778,7 +1786,6 @@
     const invExpired       = full.inventory_expired_dates  || [];
     const invScreenshot    = full.inventory_screenshot;
     const vdpScreenshot    = full.vdp_screenshot;
-    const poType           = full.preowned_inventory_page_type    || '';
     const poScreenshot     = full.preowned_inventory_screenshot;
     const poBrokenLinks    = full.preowned_inventory_broken_links  || [];
     const poCheckedLinks   = full.preowned_inventory_checked_links || [];
@@ -1806,15 +1813,6 @@
       return items.length ? `<ul class="inv-items">${items.join('')}</ul>` : '';
     }
 
-    function typeLabel(t) {
-      if (!t || t === 'unknown') return 'Unknown';
-      if (t === 'new')   return 'New Inventory';
-      if (t === 'used')  return 'Used / Pre-Owned';
-      if (t === 'cpo')   return 'Certified Pre-Owned';
-      if (t === 'mixed') return 'New + Used';
-      return t;
-    }
-
     let html = '';
 
     // ---- Group 1: Discovery & Categorization ----
@@ -1824,22 +1822,13 @@
     const srpNote = invScreenshot
       ? `Discovered at <a href="${escHtml(invScreenshot.url)}" target="_blank" rel="noopener" style="color:var(--blue)">${escHtml(truncUrl(invScreenshot.url || ''))}</a>`
       : 'No SRP discovered';
-    html += invCard('info', `SRP Type: ${typeLabel(invType)}`, srpNote, '');
+    html += invCard('info', 'SRP', srpNote, '');
 
     // VDP type
     const vdpNote = vdpScreenshot
       ? `VDP found at <a href="${escHtml(vdpScreenshot.url)}" target="_blank" rel="noopener" style="color:var(--blue)">${escHtml(truncUrl(vdpScreenshot.url || ''))}</a>`
       : 'No VDP discovered';
-    html += invCard('info', `VDP Type: ${typeLabel(vdpType)}`, vdpNote, '');
-
-    // Pre-owned/used SRP — only shown when the primary SRP is new and a separate
-    // used/CPO inventory page was found and checked.
-    if (poScreenshot) {
-      const poNote = `Discovered at <a href="${escHtml(poScreenshot.url)}" target="_blank" rel="noopener" style="color:var(--blue)">${escHtml(truncUrl(poScreenshot.url || ''))}</a>`;
-      html += invCard('info', `Pre-Owned SRP Type: ${typeLabel(poType)}`, poNote, '');
-    } else if (invType === 'new' || invType === 'mixed' || invType === 'unknown') {
-      html += invCard('na', 'Pre-Owned SRP Type', 'No separate used/pre-owned inventory page found', '');
-    }
+    html += invCard('info', 'VDP', vdpNote, '');
 
     html += `</div>`;
 
