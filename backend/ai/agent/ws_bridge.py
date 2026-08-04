@@ -15,6 +15,7 @@ Self-healing capabilities:
 """
 
 import asyncio
+import itertools
 import logging
 from typing import Optional
 
@@ -43,11 +44,26 @@ class ExtensionBridge:
         (api.py) when the extension sends back a result.
     """
 
+    _req_id_counter = itertools.count(1)
+
     def __init__(self, websocket: WebSocket, session_id: str, timeout: int = 30):
         self.websocket     = websocket
         self.session_id    = session_id
         self.timeout       = timeout
         self._pending_future: Optional[asyncio.Future] = None
+        # Tracks which request the current _pending_future is actually
+        # waiting on. A long-running command (check_srp_filters can take
+        # ~30s) combined with the self-healing retry path — which resends a
+        # command on a fresh future without any guarantee the extension's
+        # response to the FIRST attempt won't also eventually arrive — meant
+        # a late/duplicate response could silently resolve whatever command
+        # happened to be pending by the time it arrived, handing that
+        # command a completely unrelated result (confirmed in production:
+        # a used-inventory page capture got resolved with a stale
+        # check_srp_filters result). Every outgoing command now carries a
+        # unique req_id that the extension echoes back, so resolve_pending
+        # can reject anything that doesn't match what's actually expected.
+        self._pending_req_id: Optional[int] = None
         self._ping_future:    Optional[asyncio.Future] = None
         self._reconnect_event = asyncio.Event()
 
@@ -106,34 +122,48 @@ class ExtensionBridge:
     #  Core send / receive                                                 #
     # ------------------------------------------------------------------ #
 
-    async def send_and_wait(self, command: dict) -> dict:
+    async def send_and_wait(self, command: dict, timeout: Optional[float] = None) -> dict:
         """Send a command and await capture_result from the extension.
+
+        timeout: override the bridge's default (self.timeout) for commands
+        known to legitimately run long — e.g. check_srp_filters interactively
+        tests up to 3 filters x 4 options with a 2.5s settle each, ~30s
+        worst case, right at (and in practice frequently over) the 30s
+        default, causing it to time out on every single run.
 
         Raises asyncio.TimeoutError or Exception on failure.
         """
         loop = asyncio.get_event_loop()
-        self._pending_future = loop.create_future()
+        req_id = next(self._req_id_counter)
+        self._pending_future  = loop.create_future()
+        self._pending_req_id  = req_id
+        effective_timeout = timeout if timeout is not None else self.timeout
         try:
-            await self.websocket.send_json(command)
-            logger.info(f"[Bridge:{self.session_id}] Sent: {command.get('type')}")
-            result = await asyncio.wait_for(self._pending_future, timeout=self.timeout)
-            logger.info(f"[Bridge:{self.session_id}] Received result for: {command.get('type')}")
+            await self.websocket.send_json({**command, "req_id": req_id})
+            logger.info(f"[Bridge:{self.session_id}] Sent: {command.get('type')} (req_id={req_id})")
+            result = await asyncio.wait_for(self._pending_future, timeout=effective_timeout)
+            logger.info(f"[Bridge:{self.session_id}] Received result for: {command.get('type')} (req_id={req_id})")
             return result
         except asyncio.TimeoutError:
-            logger.error(f"[Bridge:{self.session_id}] Timeout: {command.get('type')}")
+            logger.error(f"[Bridge:{self.session_id}] Timeout: {command.get('type')} (req_id={req_id})")
             raise
         except Exception as e:
             logger.error(f"[Bridge:{self.session_id}] Error: {e}")
             raise
         finally:
             self._pending_future = None
+            self._pending_req_id = None
 
-    async def send_with_retry(self, command: dict, retries: int = MAX_RETRIES) -> dict:
+    async def send_with_retry(
+        self, command: dict, retries: int = MAX_RETRIES, timeout: Optional[float] = None,
+    ) -> dict:
         """Send a command with self-healing retry.
 
         On timeout:     wait with exponential backoff (2 → 4 → 8 s), then retry.
         On disconnect:  wait for the extension to reconnect (up to RECONNECT_WAIT s),
                         then re-send on the fresh socket.
+
+        timeout: see send_and_wait — overrides the bridge default for this call.
 
         Raises HealingError after all retries are exhausted.
         """
@@ -142,7 +172,7 @@ class ExtensionBridge:
 
         for attempt in range(1, retries + 2):
             try:
-                return await self.send_and_wait(command)
+                return await self.send_and_wait(command, timeout=timeout)
 
             except asyncio.TimeoutError as exc:
                 last_error = exc
@@ -173,11 +203,27 @@ class ExtensionBridge:
         )
         raise HealingError(f"'{cmd_type}' failed after {retries} retries: {last_error}") from last_error
 
-    def resolve_pending(self, data: dict) -> bool:
-        """Resolve the pending command future with capture result data."""
-        if self._pending_future and not self._pending_future.done():
-            self._pending_future.set_result(data)
-            return True
+    def resolve_pending(self, data: dict, req_id: Optional[int] = None) -> bool:
+        """Resolve the pending command future with capture result data.
+
+        Discards (returns False without resolving) any result whose req_id
+        doesn't match what's currently expected — a late response from an
+        earlier command (or a duplicate from a retried one) must never be
+        allowed to satisfy a DIFFERENT, later command's future with its
+        unrelated data. req_id=None is accepted unconditionally so older
+        extension builds that don't yet echo it back still work, just
+        without this protection.
+        """
+        if not (self._pending_future and not self._pending_future.done()):
+            return False
+        if req_id is not None and req_id != self._pending_req_id:
+            logger.warning(
+                f"[Bridge:{self.session_id}] Discarding stale/mismatched result "
+                f"(got req_id={req_id}, expected={self._pending_req_id})"
+            )
+            return False
+        self._pending_future.set_result(data)
+        return True
         return False
 
     @property

@@ -1013,8 +1013,16 @@
   <footer>Powered by Stream Companies · WebSentinel AI</footer>
 
 <script>
-  const API        = '';
-  const SESSION_ID = 'ui_' + Math.random().toString(36).substring(2, 10);
+  const API = '';
+  // Persisted across reloads so closing/reopening this tab reconnects to the
+  // same session instead of losing the in-flight or finished audit (and so
+  // the pairing code below stays stable — see restoreSession()).
+  const SESSION_STORAGE_KEY = 'websentinel_session_id';
+  let SESSION_ID = localStorage.getItem(SESSION_STORAGE_KEY);
+  if (!SESSION_ID) {
+    SESSION_ID = 'ui_' + Math.random().toString(36).substring(2, 10);
+    localStorage.setItem(SESSION_STORAGE_KEY, SESSION_ID);
+  }
   let eventSource  = null;
 
   /* ---------- DOM refs ---------- */
@@ -1082,6 +1090,31 @@
     span.className = `line ${type}`;
     span.textContent = `[${ts()}] ${msg}`;
     logEl.appendChild(span);
+    logEl.appendChild(document.createTextNode('\n'));
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+  // Live thumbnail right in the log as each capture lands — lets you see
+  // in real time whether screenshots are actually distinct per page/step,
+  // without waiting for the full results section or opening the saved
+  // files individually. Click a thumbnail to open the full-size image.
+  function logWithThumbnail(msg, type, imgUrl) {
+    const line = document.createElement('span');
+    line.className = `line ${type}`;
+    line.textContent = `[${ts()}] ${msg}`;
+    logEl.appendChild(line);
+    if (imgUrl) {
+      const a = document.createElement('a');
+      a.href = imgUrl;
+      a.target = '_blank';
+      a.rel = 'noopener';
+      a.style.cssText = 'display:inline-block;margin-left:8px;vertical-align:middle;';
+      const img = document.createElement('img');
+      img.src = imgUrl;
+      img.loading = 'lazy';
+      img.style.cssText = 'height:48px;border:1px solid #333;border-radius:4px;vertical-align:middle;';
+      a.appendChild(img);
+      logEl.appendChild(a);
+    }
     logEl.appendChild(document.createTextNode('\n'));
     logEl.scrollTop = logEl.scrollHeight;
   }
@@ -1170,7 +1203,7 @@
 
     es.addEventListener('page_result', e => {
       const d = JSON.parse(e.data);
-      log(`Captured: ${d.title || d.url || 'page'} (${d.viewport || 'desktop'})`, 'ok');
+      logWithThumbnail(`Captured: ${d.title || d.url || 'page'} (${d.viewport || 'desktop'})`, 'ok', d.screenshot_url);
     });
 
     es.addEventListener('complete', e => {
@@ -1194,7 +1227,11 @@
     try {
       const res  = await fetch(`${API}/api/chat/sessions/${SESSION_ID}/results`);
       const full = await res.json();
-      showStats(full, completionData);
+      // completionData normally comes from the SSE "complete" event; when
+      // restoring an already-finished audit after a reload there is no SSE
+      // event to read, so fall back to deriving has_vdp from the stored result.
+      const cData = completionData || { has_vdp: !!full.vdp_screenshot };
+      showStats(full, cData);
       showSummary(full);
       renderShots(full);
       renderFindings(full);
@@ -2117,6 +2154,39 @@
 
   dlPdf.addEventListener('click', () =>
     download(`/api/chat/sessions/${SESSION_ID}/pdf`, `websentinel_audit_${Date.now()}.pdf`));
+
+  /* ---------- Restore session on load ---------- */
+  // Because SESSION_ID now survives reloads, a running audit started before
+  // a reload/tab-close can still be found and either shown (if finished by
+  // now) or re-attached to (if still in progress) instead of starting blank.
+  async function restoreSession() {
+    try {
+      const res = await fetch(`${API}/api/chat/sessions/${SESSION_ID}`);
+      if (!res.ok) return;
+      const data = await res.json();
+
+      if (data.audit_result) {
+        log('Restored previous audit results.', 'ok');
+        progressSec.style.display = 'none';
+        await fetchAndShowResults();
+        return;
+      }
+
+      const inProgress = (data.messages || []).some(m => m.message_type === 'audit_progress');
+      if (inProgress) {
+        log('Reconnecting to audit in progress...', 'info');
+        auditBtn.disabled = true;
+        progressSec.style.display = 'block';
+        setProgress(10);
+        if (eventSource) eventSource.close();
+        eventSource = new EventSource(`${API}/api/chat/stream/${SESSION_ID}`);
+        bindSSE(eventSource);
+      }
+    } catch (e) {
+      // Backend offline or nothing to restore — fall through to blank state.
+    }
+  }
+  restoreSession();
 </script>
 </body>
 </html>

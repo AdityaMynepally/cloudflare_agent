@@ -73,8 +73,18 @@ export class WSClient {
     }
   }
 
-  sendCaptureResult(data) {
-    this.send({ type: 'capture_result', data });
+  // reqId must be the req_id of the SPECIFIC command this result answers —
+  // callers get it from their own command handler invocation's local
+  // `command.req_id` (a per-invocation closure variable), never from any
+  // shared/mutable wsClient state. Command handlers are async and not
+  // awaited by _handleMessage below, so a shared "current request" field
+  // would be a race: if a new command arrives while an old handler is
+  // still running (confirmed in production — a slow check_srp_filters
+  // handler was still in flight when the next command was dispatched), the
+  // old handler's eventual response would get mistagged with the NEW
+  // command's id instead of being correctly recognized as stale.
+  sendCaptureResult(data, reqId) {
+    this.send({ type: 'capture_result', data, req_id: reqId ?? null });
   }
 
   onCommand(handler) {

@@ -721,14 +721,26 @@ class AuditOrchestrator:
         )
 
     def _find_preowned_vehicle_links(
-        self, links: list, base_url: str, exclude: set, limit: int
+        self, links: list, base_url: str, exclude: set, limit: int,
+        assume_preowned: bool = False,
     ) -> list:
         """Scan SRP links for additional pre-owned (used/CPO) VDP candidates.
 
-        Filters by URL alone (categorize_inventory_url) so we only spend a page
-        navigation on vehicles that are actually likely to be pre-owned — used
-        for sampling multiple VDPs for the history-report check.
-        Returns up to `limit` (url, title) tuples, excluding anything in `exclude`.
+        By default filters by URL alone (categorize_inventory_url) so we only
+        spend a page navigation on vehicles that are actually likely to be
+        pre-owned — used for sampling multiple VDPs for the history-report
+        check. Returns up to `limit` (url, title) tuples, excluding anything
+        in `exclude`.
+
+        assume_preowned: when True, skips the categorize_inventory_url(href)
+        filter entirely. Use this only when `links` are already known — by
+        page context, not URL guessing — to come from a confirmed used/CPO
+        SRP (i.e. base_url is that SRP's own URL). Many dealer platforms use
+        VIN-only VDP paths with no condition keyword anywhere in the URL
+        (e.g. "/vehicle/2019-toyota-camry/JTNB1..."), which makes
+        categorize_inventory_url return 'unknown' for every legitimate
+        candidate and silently reject all of them — even though the SRP they
+        were found on already tells us their condition.
         """
         base_host = urlparse(base_url).netloc
         seen = set(exclude)
@@ -760,7 +772,7 @@ class AuditOrchestrator:
             if not _is_likely_vdp_path(path):
                 continue
 
-            if categorize_inventory_url(href) not in ("used", "cpo", "mixed"):
+            if not assume_preowned and categorize_inventory_url(href) not in ("used", "cpo", "mixed"):
                 continue
 
             seen.add(href)
@@ -803,6 +815,8 @@ class AuditOrchestrator:
 
             # Save inventory screenshot
             inv_screenshot_b64 = inv_capture.get("screenshot_base64")
+            if not inv_screenshot_b64 and inv_capture.get("screenshot_error"):
+                logger.warning(f"Screenshot capture failed for inventory SRP {inventory_url}: {inv_capture['screenshot_error']}")
             inv_screenshot_path = None
             if inv_screenshot_b64:
                 inv_screenshot_path = self._save_screenshot(
@@ -849,13 +863,21 @@ class AuditOrchestrator:
                 "status": "inventory",
             })
             try:
-                filter_result = await bridge.send_and_wait({"type": "check_srp_filters"})
+                # Interactively tests up to 3 filters x 4 options with a 2.5s
+                # settle each — ~30s worst case, right at (and in practice
+                # observed consistently exceeding) the bridge's 30s default,
+                # so this has been silently timing out and failing on every
+                # single audit run regardless of what site was being tested.
+                filter_result = await bridge.send_and_wait({"type": "check_srp_filters"}, timeout=45)
                 session.srp_filter_zero_results = filter_result.get("zero_results", [])
                 session.srp_filters_checked     = filter_result.get("filters_checked", 0)
                 session.srp_filter_type         = filter_result.get("filter_type", "none")
                 session.srp_filter_note         = filter_result.get("note", "")
             except Exception as fe:
                 logger.warning(f"SRP filter check error (non-fatal): {fe}")
+                await emit("progress", f"SRP filter check failed (non-fatal): {fe}", {
+                    "status": "inventory",
+                })
 
             # Collect SRP link/image results
             inv_broken_links, inv_checked_links = await srp_link_task
@@ -901,9 +923,25 @@ class AuditOrchestrator:
                         "type": "audit_page",
                         "url": preowned_url,
                     })
-                    if not po_capture.get("error"):
+                    await emit("progress",
+                        f"[diag] pre-owned SRP raw response — keys: {sorted(po_capture.keys())}, "
+                        f"type field: {po_capture.get('type', '(none)')}",
+                        {"status": "inventory"},
+                    )
+                    if po_capture.get("error"):
+                        await emit("progress", f"Pre-owned SRP capture returned an error: {po_capture['error']}", {
+                            "status": "inventory",
+                        })
+                    else:
                         vdp_search_links = po_capture.get("links", [])
                         vdp_search_base  = preowned_url
+                        po_meta = po_capture.get("metadata") or {}
+                        await emit("progress",
+                            f"Pre-owned SRP captured — {len(vdp_search_links)} link(s) found on page "
+                            f"(landed on: {po_meta.get('url', '?')}, title: \"{po_meta.get('title', '?')}\", "
+                            f"HTML size: {po_meta.get('contentLength', '?')} chars)",
+                            {"status": "inventory"},
+                        )
                         preowned_years   = (po_capture.get("inventory_data") or {}).get("vehicle_years", [])
                         # Collect expired dates from pre-owned SRP
                         for date_entry in (po_capture.get("page_dates") or []):
@@ -949,6 +987,9 @@ class AuditOrchestrator:
                         session.preowned_inventory_broken_images = po_broken_imgs
                 except Exception as po_err:
                     logger.warning(f"Pre-owned SRP navigation failed (non-fatal): {po_err}")
+                    await emit("progress", f"Pre-owned SRP navigation failed (non-fatal): {po_err}", {
+                        "status": "inventory",
+                    })
 
             await emit("progress", "Looking for top vehicle on inventory page...", {
                 "status": "inventory",
@@ -1010,6 +1051,8 @@ class AuditOrchestrator:
                 return
 
             vdp_screenshot_b64 = vdp_capture.get("screenshot_base64")
+            if not vdp_screenshot_b64 and vdp_capture.get("screenshot_error"):
+                logger.warning(f"Screenshot capture failed for VDP {vehicle_url}: {vdp_capture['screenshot_error']}")
             vdp_screenshot_path = None
             if vdp_screenshot_b64:
                 vdp_screenshot_path = self._save_screenshot(
@@ -1077,15 +1120,40 @@ class AuditOrchestrator:
 
             remaining = HISTORY_REPORT_VEHICLE_TARGET - 1
             if remaining > 0:
-                candidate_pool = list(vdp_search_links)
-                if vdp_search_base != inventory_url:
-                    candidate_pool += inv_links
-                candidates = self._find_preowned_vehicle_links(
-                    candidate_pool, vdp_search_base,
-                    exclude=visited_vdp_urls,
-                    limit=HISTORY_REPORT_CANDIDATE_ATTEMPTS,
+                # Two pools, searched separately because they carry different
+                # confidence about condition: vdp_search_links (only when it
+                # came from a confirmed pre-owned SRP — see needs_preowned_nav
+                # above) can be trusted by page context even when individual
+                # VDP URLs don't self-identify as used/CPO; inv_links (the
+                # primary/new SRP) can't, so those still need each URL to
+                # verify its own condition.
+                candidates: list[tuple[str, str, bool]] = []
+                confirmed_preowned_pool = vdp_search_base != inventory_url
+                if confirmed_preowned_pool:
+                    po_candidates = self._find_preowned_vehicle_links(
+                        vdp_search_links, vdp_search_base,
+                        exclude=visited_vdp_urls,
+                        limit=HISTORY_REPORT_CANDIDATE_ATTEMPTS,
+                        assume_preowned=True,
+                    )
+                    candidates.extend((u, t, True) for u, t in po_candidates)
+
+                if len(candidates) < HISTORY_REPORT_CANDIDATE_ATTEMPTS:
+                    exclude_now = visited_vdp_urls | {u for u, _, _ in candidates}
+                    extra_candidates = self._find_preowned_vehicle_links(
+                        inv_links, inventory_url,
+                        exclude=exclude_now,
+                        limit=HISTORY_REPORT_CANDIDATE_ATTEMPTS - len(candidates),
+                    )
+                    candidates.extend((u, t, False) for u, t in extra_candidates)
+
+                await emit("progress",
+                    f"Found {len(candidates)} extra pre-owned VDP candidate(s) "
+                    f"(pool sizes: pre-owned SRP={len(vdp_search_links)}, primary SRP={len(inv_links)})",
+                    {"status": "inventory"},
                 )
-                for cand_url, cand_title in candidates:
+
+                for cand_url, cand_title, from_confirmed_preowned in candidates:
                     if remaining <= 0:
                         break
                     if cand_url in visited_vdp_urls:
@@ -1107,6 +1175,10 @@ class AuditOrchestrator:
                         or cand_title
                     )
                     cand_page_type = categorize_inventory_url(cand_url)
+                    if cand_page_type == "unknown" and from_confirmed_preowned:
+                        # URL itself gave no signal — trust the SRP it was
+                        # found on instead of defaulting to "not preowned".
+                        cand_page_type = categorize_inventory_url(vdp_search_base) or "used"
                     vehicle_checks.append(await self._check_vdp_history_reports(
                         bridge, cand_capture, cand_url, cand_title_final, cand_page_type,
                     ))
@@ -1462,6 +1534,8 @@ class AuditOrchestrator:
         social_links = capture.get("social_links") or []
         page_dates = capture.get("page_dates") or []
         screenshot_b64 = capture.get("screenshot_base64")
+        if not screenshot_b64 and capture.get("screenshot_error"):
+            logger.warning(f"Screenshot capture failed for {url} ({viewport.value}): {capture['screenshot_error']}")
 
         # Determine page type
         title = metadata.get("title", "") or seo_data.get("title", "")

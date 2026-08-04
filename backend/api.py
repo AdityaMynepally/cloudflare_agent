@@ -149,9 +149,10 @@ async def websocket_extension(websocket: WebSocket, session_id: str):
 
             elif data.get("type") == "capture_result":
                 capture_data = data.get("data", {})
+                req_id = data.get("req_id")
                 bridge = extension_bridges.get(session_id)
                 if bridge and bridge.has_pending:
-                    bridge.resolve_pending(capture_data)
+                    bridge.resolve_pending(capture_data, req_id)
                 else:
                     logger.info(f"Capture result received (no pending): {session_id}")
 

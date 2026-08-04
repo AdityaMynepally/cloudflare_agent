@@ -154,12 +154,22 @@
 
   function getAllLinks() {
     const links = Array.from(document.querySelectorAll('a[href]'));
-    return links.map(a => ({
-      href: a.href,
-      text: (a.innerText || '').trim().substring(0, 100),
-      ariaLabel: (a.getAttribute('aria-label') || '').toLowerCase(),
-      opens_new_tab: a.getAttribute('target') === '_blank',
-    }));
+    return links.map(a => {
+      // Backend URL-pattern matching (inventory/used-vehicle discovery)
+      // keys off `pathname` — computed here so it's present on every raw
+      // link capture, not just the deduped/capped internal_links list built
+      // separately in the service worker's discover_links handler, which
+      // otherwise left it silently empty for any other caller.
+      let pathname = '';
+      try { pathname = new URL(a.href).pathname; } catch {}
+      return {
+        href: a.href,
+        text: (a.innerText || '').trim().substring(0, 100),
+        ariaLabel: (a.getAttribute('aria-label') || '').toLowerCase(),
+        opens_new_tab: a.getAttribute('target') === '_blank',
+        pathname,
+      };
+    });
   }
 
   // ---- Sprint 6: Inventory graphic / banner links (links wrapping images or in banner areas) ----
@@ -992,13 +1002,15 @@
         '[class*="title" i],[class*="heading" i],[class*="header" i],[class*="label" i]';
       const SALES_DEPT_RE = /\b(sales|dealership|showroom)\b/i;
       const OTHER_DEPT_RE = /\b(service|parts|body\s*shop|collision|repair|rental|tires?)\b/i;
+      const hoursHeadingEls = [...document.querySelectorAll(DEPT_HEADING_SEL)]
+        .map(el => ({ el, text: (el.textContent || '').trim() }))
+        .filter(h => h.text.length < 60 && /\bhours\b/i.test(h.text));
+
       // Only headings that unambiguously name a department are classified — a
       // generic "Hours" heading (no department word) is left untouched so it
       // doesn't accidentally exclude an unlabeled single hours widget.
-      const deptHeadings = [...document.querySelectorAll(DEPT_HEADING_SEL)]
-        .map(el => ({ el, text: (el.textContent || '').trim() }))
-        .filter(h => h.text.length < 60 && /\bhours\b/i.test(h.text) &&
-                     (SALES_DEPT_RE.test(h.text) || OTHER_DEPT_RE.test(h.text)))
+      const deptHeadings = hoursHeadingEls
+        .filter(h => SALES_DEPT_RE.test(h.text) || OTHER_DEPT_RE.test(h.text))
         .map(h => ({ el: h.el, exclude: !SALES_DEPT_RE.test(h.text) }));
 
       // Returns true if `el` sits under a non-sales department heading (Service/Parts/…)
@@ -1010,6 +1022,27 @@
           else break;
         }
         return result;
+      }
+
+      // The day/time scan below deliberately walks the WHOLE page (hours
+      // widgets show up in all kinds of markup shapes), which means it can
+      // just as easily match a day name + time range inside unrelated
+      // marketing copy — a promo banner or an old testimonial mentioning
+      // "Monday ... 9:00 AM - 8:00 PM" — as it can the real hours table.
+      // Once a day's slot is filled it's never overwritten (see the
+      // `if (domHours[day]) continue` guards below), so noise appearing
+      // earlier in the DOM than the real widget would permanently win.
+      // When the page has at least one "*Hours*" heading anywhere (dept-
+      // specific or generic, e.g. "Hours & Directions"), require a match to
+      // fall after the first one — real hours content is reached that way;
+      // stray day/time mentions earlier in the page (nav, hero banners,
+      // reviews) are not. Pages with no hours heading at all keep the old
+      // permissive behavior, so an unlabeled single hours widget still works.
+      function hasPrecedingHoursHeading(el) {
+        if (!hoursHeadingEls.length) return true;
+        return hoursHeadingEls.some(
+          h => h.el.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING
+        );
       }
 
       // Include tr so table-row text is scanned even when day/time are in separate cells
@@ -1039,7 +1072,7 @@
         const RANGE_RE = /^(Mon(?:day)?|Tue(?:sday)?|Wed(?:nesday)?|Thu(?:rsday)?|Fri(?:day)?|Sat(?:urday)?|Sun(?:day)?)\s*[-–]\s*(Mon(?:day)?|Tue(?:sday)?|Wed(?:nesday)?|Thu(?:rsday)?|Fri(?:day)?|Sat(?:urday)?|Sun(?:day)?)\b/i;
         const rangeMatch = RANGE_RE.exec(text);
         if (rangeMatch) {
-          if (isExcludedDept(el)) continue;
+          if (isExcludedDept(el) || !hasPrecedingHoursHeading(el)) continue;
           const startDay = resolveDay(rangeMatch[1]);
           const endDay   = resolveDay(rangeMatch[2]);
           if (startDay && endDay) {
@@ -1077,7 +1110,7 @@
         // second distinct day name also appears (but didn't form a proper
         // "Mon – Fri" range above), this is still some multi-day container.
         if (distinctDaysMentioned > 1) continue;
-        if (isExcludedDept(el)) continue;
+        if (isExcludedDept(el) || !hasPrecedingHoursHeading(el)) continue;
         const dayFound = resolveDay(singleMatch[1]);
         if (!dayFound || domHours[dayFound]) continue;
         // Same reordering as the range branch above — check "closed" using

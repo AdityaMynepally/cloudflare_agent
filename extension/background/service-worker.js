@@ -214,21 +214,49 @@ const VIEWPORT_PRESETS = {
   }
 };
 
-async function attachDebugger(tabId) {
+function _debuggerAttachOnce(tabId) {
   return new Promise((resolve, reject) => {
     chrome.debugger.attach({ tabId }, '1.3', () => {
       if (chrome.runtime.lastError) {
-        // Already attached is OK
-        if (chrome.runtime.lastError.message.includes('Already attached')) {
-          resolve();
-        } else {
-          reject(new Error(chrome.runtime.lastError.message));
-        }
+        reject(new Error(chrome.runtime.lastError.message));
       } else {
         resolve();
       }
     });
   });
+}
+
+function _debuggerDetachOnce(tabId) {
+  return new Promise((resolve) => {
+    chrome.debugger.detach({ tabId }, () => {
+      // Ignore lastError here — we're detaching defensively to clear
+      // whatever state exists; nothing useful to do if it fails.
+      resolve();
+    });
+  });
+}
+
+async function attachDebugger(tabId) {
+  try {
+    await _debuggerAttachOnce(tabId);
+    return;
+  } catch (err) {
+    if (err.message.includes('Already attached')) {
+      return; // our own session from a previous call — fine as-is
+    }
+    if (!err.message.includes('Another debugger is already attached')) {
+      throw err;
+    }
+    // Seen intermittently after many attach/detach-metrics-only cycles over
+    // a long audit — could be a genuinely different debugger client (native
+    // DevTools opened on this tab) or a stale session Chrome still thinks
+    // is attached. A detach+reattach can clear the latter case for free; if
+    // it's truly another client, the reattach below will just fail again
+    // with the same error, which is the correct outcome (nothing we can
+    // do about a real external debugger holding the tab).
+    await _debuggerDetachOnce(tabId);
+    await _debuggerAttachOnce(tabId);
+  }
 }
 
 async function sendDebuggerCommand(tabId, method, params = {}) {
@@ -259,37 +287,73 @@ async function setViewportEmulation(tabId, viewport) {
 }
 
 async function clearViewportEmulation(tabId) {
+  // Deliberately does NOT detach the debugger — captureScreenshot() now
+  // depends on it staying attached for every subsequent capture on this
+  // tab (desktop captures included, not just mobile), not only while
+  // viewport emulation is active. The debugger session is cleaned up
+  // automatically by Chrome when the tab/window closes.
   try {
     await sendDebuggerCommand(tabId, 'Emulation.clearDeviceMetricsOverride');
-    chrome.debugger.detach({ tabId }, () => {
-      if (chrome.runtime.lastError) {
-        // Ignore detach errors
-      }
-    });
   } catch (err) {
     console.warn('[Viewport] Clear emulation error:', err.message);
   }
 }
 
 async function captureScreenshot(tabId) {
+  // chrome.tabs.captureVisibleTab asks the OS compositor for the visible
+  // tab's pixels, which only works when the tab's window is actually
+  // on-screen and unoccluded — covered by the user's own window (a near-
+  // constant state if they're working while an audit runs) and it silently
+  // returns blank/stale frames. A previous fix briefly focused the agent
+  // window whenever that happened, which worked but meant a visible flicker
+  // on every single screenshot for anyone actively using their computer.
+  //
+  // CDP's Page.captureScreenshot instead asks the renderer process directly
+  // for its content — the same mechanism headless Chrome/Puppeteer use to
+  // screenshot tabs with no visible window at all. It doesn't need the tab
+  // to be composited, active, or focused, so this eliminates the disruption
+  // at the root instead of working around it.
+  //
+  // Returns { base64, error } rather than just a bare string/null — a
+  // failure here previously only surfaced as console.error() inside the
+  // extension's own service-worker console, invisible from the backend/UI,
+  // which made a real failure indistinguishable from "nothing to capture".
   try {
     const tab = await chrome.tabs.get(tabId);
     const restrictedProtocols = ['chrome://', 'edge://', 'about:', 'devtools://', 'chrome-extension://', 'edge-extension://'];
 
-    if (!tab.url || tab.url.trim() === '') return null;
+    if (!tab.url || tab.url.trim() === '') {
+      return { base64: null, error: 'tab has no URL (restricted or blank page)' };
+    }
     for (const protocol of restrictedProtocols) {
-      if (tab.url.startsWith(protocol)) return null;
+      if (tab.url.startsWith(protocol)) {
+        return { base64: null, error: `restricted URL protocol: ${protocol}` };
+      }
     }
 
-    // Must be active tab to capture
-    await chrome.tabs.update(tabId, { active: true });
-    await sleep(300);
-
-    const dataUrl = await chrome.tabs.captureVisibleTab(null, { format: 'png' });
-    return dataUrl.replace(/^data:image\/png;base64,/, '');
+    await attachDebugger(tabId);
+    await sendDebuggerCommand(tabId, 'Page.enable');
+    // A backgrounded (unfocused/occluded) tab's renderer can stop producing
+    // fresh frames even though CDP itself doesn't require the tab to be
+    // visible — Page.captureScreenshot then just hands back whatever frame
+    // was last actually painted, which without this can be stuck at
+    // whatever the page looked like the one time the window WAS visible
+    // (e.g. briefly at creation), never updating as the tab navigates
+    // afterward. Marking the page lifecycle state 'active' tells Chrome not
+    // to throttle/freeze this tab's rendering just because it's backgrounded.
+    try {
+      await sendDebuggerCommand(tabId, 'Page.setWebLifecycleState', { state: 'active' });
+    } catch (err) {
+      console.warn('[Screenshot] setWebLifecycleState failed (continuing anyway):', err.message);
+    }
+    const result = await sendDebuggerCommand(tabId, 'Page.captureScreenshot', { format: 'png' });
+    if (!result || !result.data) {
+      return { base64: null, error: `Page.captureScreenshot returned no data (result: ${JSON.stringify(result)})` };
+    }
+    return { base64: result.data, error: null }; // already bare base64, no data: URL prefix to strip
   } catch (err) {
     console.error('[Screenshot] Failed:', err.message);
-    return null;
+    return { base64: null, error: err.message };
   }
 }
 
@@ -353,23 +417,41 @@ async function injectJsErrorCapture(tabId) {
   }
 }
 
-// ---- Dedicated agent tab ----
+// ---- Dedicated agent window ----
+//
+// The audit tab lives in its own separate browser window (not a tab in the
+// user's own window) purely so it's visually distinct from whatever the
+// user has open — the extension's own actions (navigations, clicks, etc.)
+// stay out of the user's tab strip. Screenshot capture no longer depends on
+// this window's visibility/focus at all (see captureScreenshot() — it uses
+// CDP's Page.captureScreenshot, not chrome.tabs.captureVisibleTab), so
+// there's nothing left to steal or restore focus for.
 
+let agentWindowId = null;
 let agentTabId = null;
 
-async function getOrCreateAgentTab(url) {
-  if (agentTabId) {
+async function getOrCreateAgentTab() {
+  if (agentTabId !== null) {
     try {
       await chrome.tabs.get(agentTabId);
       return agentTabId;
     } catch {
+      // Tab/window was closed by the user — fall through and recreate it.
+      agentWindowId = null;
       agentTabId = null;
     }
   }
 
-  const tab = await chrome.tabs.create({ url: url || 'about:blank', active: false });
-  agentTabId = tab.id;
-  console.log('[Agent] Created dedicated tab:', agentTabId);
+  const win = await chrome.windows.create({
+    url: 'about:blank',
+    focused: false,
+    type: 'normal',
+    width: 1440,
+    height: 900,
+  });
+  agentWindowId = win.id;
+  agentTabId = win.tabs[0].id;
+  console.log('[Agent] Created dedicated window:', agentWindowId, 'tab:', agentTabId);
   return agentTabId;
 }
 
@@ -393,14 +475,14 @@ wsClient.onCommand(async (command) => {
       await sleep(2000);
       const data = await injectAndCapture(tabId);
       const screenshot = await captureScreenshot(tabId);
-      wsClient.sendCaptureResult({ ...data, screenshot_base64: screenshot });
+      wsClient.sendCaptureResult({ ...data, screenshot_base64: screenshot.base64, screenshot_error: screenshot.error }, command.req_id);
     }
 
     if (command.type === 'capture') {
       const tabId = await getOrCreateAgentTab();
       const data = await injectAndCapture(tabId);
       const screenshot = await captureScreenshot(tabId);
-      wsClient.sendCaptureResult({ ...data, screenshot_base64: screenshot });
+      wsClient.sendCaptureResult({ ...data, screenshot_base64: screenshot.base64, screenshot_error: screenshot.error }, command.req_id);
     }
 
     if (command.type === 'audit_page') {
@@ -432,10 +514,11 @@ wsClient.onCommand(async (command) => {
 
       wsClient.sendCaptureResult({
         ...data,
-        screenshot_base64: screenshot,
+        screenshot_base64: screenshot.base64,
+        screenshot_error: screenshot.error,
         audited_url: command.url,
         viewport_type: viewport?.mobile ? 'mobile' : 'desktop',
-      });
+      }, command.req_id);
     }
 
     if (command.type === 'discover_links') {
@@ -452,7 +535,18 @@ wsClient.onCommand(async (command) => {
       try { baseDomain = new URL(command.url).hostname; } catch { baseDomain = ''; }
       const categorized = categorizeLinks(data.links || [], baseDomain);
 
-      // Also collect all unique internal links
+      // Also collect all unique internal links, in natural document order —
+      // deliberately NOT reordered by nav/header/footer membership. An
+      // earlier version of this tried prioritizing nav links first to make
+      // sure department entry points like "Used Vehicles" survive the cap,
+      // but on a site whose nav mega-menu itself has dozens of individual
+      // model sub-links, that reordering can just as easily fill the cap
+      // with nav submenu noise and crowd out a link that would otherwise
+      // have survived in plain document order (nav typically renders near
+      // the top of the page anyway). Simpler and lower-risk: keep natural
+      // order, and raise the cap generously so large dealer nav structures
+      // don't get truncated away in the first place.
+      const INTERNAL_LINKS_CAP = 200;
       const internalLinks = [];
       const seen = new Set();
       for (const link of (data.links || [])) {
@@ -471,11 +565,12 @@ wsClient.onCommand(async (command) => {
 
       wsClient.sendCaptureResult({
         ...data,
-        screenshot_base64: screenshot,
+        screenshot_base64: screenshot.base64,
+        screenshot_error: screenshot.error,
         categorized_links: categorized,
-        internal_links: internalLinks.slice(0, 50),
+        internal_links: internalLinks.slice(0, INTERNAL_LINKS_CAP),
         discovered_url: command.url,
-      });
+      }, command.req_id);
     }
 
     if (command.type === 'click') {
@@ -491,7 +586,7 @@ wsClient.onCommand(async (command) => {
       await sleep(2000);
       const data = await injectAndCapture(tabId);
       const screenshot = await captureScreenshot(tabId);
-      wsClient.sendCaptureResult({ ...data, screenshot_base64: screenshot });
+      wsClient.sendCaptureResult({ ...data, screenshot_base64: screenshot.base64, screenshot_error: screenshot.error }, command.req_id);
     }
 
     if (command.type === 'get_elements') {
@@ -533,7 +628,7 @@ wsClient.onCommand(async (command) => {
       wsClient.sendCaptureResult({
         type: 'elements_result',
         elements: results[0]?.result || []
-      });
+      }, command.req_id);
     }
 
     if (command.type === 'scroll') {
@@ -551,7 +646,7 @@ wsClient.onCommand(async (command) => {
       await sleep(1000);
       const data = await injectAndCapture(tabId);
       const screenshot = await captureScreenshot(tabId);
-      wsClient.sendCaptureResult({ ...data, screenshot_base64: screenshot });
+      wsClient.sendCaptureResult({ ...data, screenshot_base64: screenshot.base64, screenshot_error: screenshot.error }, command.req_id);
     }
 
     if (command.type === 'find_vehicle_link') {
@@ -628,7 +723,7 @@ wsClient.onCommand(async (command) => {
       });
 
       const vehicleInfo = results[0]?.result || {};
-      wsClient.sendCaptureResult(vehicleInfo);
+      wsClient.sendCaptureResult(vehicleInfo, command.req_id);
     }
     if (command.type === 'check_srp_filters') {
       // Detect filter controls on the current SRP page and test for zero-result combos.
@@ -813,7 +908,7 @@ wsClient.onCommand(async (command) => {
       });
 
       const filterData = results[0]?.result || { zero_results: [], filters_checked: 0, filter_type: 'none' };
-      wsClient.sendCaptureResult({ type: 'filter_check_result', ...filterData });
+      wsClient.sendCaptureResult({ type: 'filter_check_result', ...filterData }, command.req_id);
     }
 
     if (command.type === 'fill_contact_form') {
@@ -902,9 +997,10 @@ wsClient.onCommand(async (command) => {
       const fillResult = filled[0]?.result || { filled: [], count: 0 };
       wsClient.sendCaptureResult({
         ...fillResult,
-        screenshot_base64: screenshot,
+        screenshot_base64: screenshot.base64,
+        screenshot_error: screenshot.error,
         type: 'form_filled',
-      });
+      }, command.req_id);
     }
 
     if (command.type === 'capture_trade_value') {
@@ -1006,8 +1102,9 @@ wsClient.onCommand(async (command) => {
       wsClient.sendCaptureResult({
         type: 'trade_value_result',
         ...widgetResult,
-        screenshot_base64: screenshot,
-      });
+        screenshot_base64: screenshot.base64,
+        screenshot_error: screenshot.error,
+      }, command.req_id);
     }
 
     if (command.type === 'capture_feature_click') {
@@ -1061,8 +1158,9 @@ wsClient.onCommand(async (command) => {
       wsClient.sendCaptureResult({
         type: 'feature_click_result',
         ...clickResult,
-        screenshot_base64: screenshot,
-      });
+        screenshot_base64: screenshot.base64,
+        screenshot_error: screenshot.error,
+      }, command.req_id);
     }
 
     if (command.type === 'capture_history_report_check') {
@@ -1125,13 +1223,14 @@ wsClient.onCommand(async (command) => {
       wsClient.sendCaptureResult({
         type: 'history_report_check_result',
         ...checkResult,
-        screenshot_base64: screenshot,
-      });
+        screenshot_base64: screenshot.base64,
+        screenshot_error: screenshot.error,
+      }, command.req_id);
     }
 
   } catch (err) {
     console.error('[WS] Command error:', command.type, err);
-    wsClient.sendCaptureResult({ error: err.message, command_type: command.type });
+    wsClient.sendCaptureResult({ error: err.message, command_type: command.type }, command.req_id);
   }
 });
 

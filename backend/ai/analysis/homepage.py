@@ -195,6 +195,15 @@ _VEHICLE_MODELS = [
     ("rogue", ["rogue"]),
     ("murano", ["murano"]),
     ("frontier", ["frontier"]),
+    ("sienna", ["sienna"]),
+    ("prius plug-in hybrid", ["prius-plugin-hybrid", "prius-plug-in-hybrid", "prius-prime"]),
+    ("prius", ["prius"]),
+    ("toyota crown", ["toyota-crown", "crown"]),
+    ("gr86", ["gr86", "gr-86"]),
+    ("rav4", ["rav4", "rav-4"]),
+    ("4runner", ["4runner", "4-runner"]),
+    ("wrangler", ["wrangler"]),
+    ("grand cherokee", ["grand-cherokee"]),
 ]
 
 _OFFER_TOPIC_MAP = {
@@ -210,12 +219,60 @@ _OFFER_TOPIC_MAP = {
     "ev":        ["electric", "ev", "hybrid", "plug-in"],
 }
 
+# Generic marketing/filler words that appear in slide text but carry no
+# distinguishing meaning — excluded so the content-word overlap check below
+# (which has no fixed model list to consult) doesn't "match" on noise like
+# both a slide's text and its URL happening to contain "new" or "shop".
+_GENERIC_WORDS = {
+    "a", "an", "the", "and", "or", "for", "with", "in", "on", "at", "to", "of",
+    "is", "are", "be", "we", "you", "your", "our", "new", "used", "view",
+    "shop", "browse", "search", "inventory", "vehicle", "vehicles", "stock",
+    "available", "save", "now", "today", "get", "click", "learn", "more",
+    "here", "call", "visit", "explore", "starting", "from", "up", "off",
+    "all", "this", "that", "it", "its", "out", "see", "find", "great",
+    "best", "top", "special", "specials", "deal", "deals", "offer",
+    "offers", "exclusive", "limited", "hurry", "only", "just", "check",
+    "details", "instock", "in-stock",
+}
+
+_WORD_RE = re.compile(r"[a-z0-9][a-z0-9\-]*")
+
+
+def _content_words(text: str) -> set[str]:
+    """Distinctive words in slide/link text — candidates for a model/offer name.
+
+    Deliberately has no fixed vocabulary of vehicle models/brands (that list
+    can never be complete across every dealership's lineup) — instead treats
+    any non-generic, non-numeric word as a candidate and lets the URL overlap
+    check below confirm or reject it.
+    """
+    words: set[str] = set()
+    for w in _WORD_RE.findall(text.lower()):
+        w = w.strip("-")
+        if len(w) < 3 or w.isdigit() or w in _GENERIC_WORDS:
+            continue
+        words.add(w)
+    return words
+
+
+def _matching_url_word(words: set[str], href_lower: str) -> Optional[str]:
+    """First candidate word that literally appears in the URL, if any."""
+    for w in words:
+        if w in href_lower:
+            return w
+    return None
+
 
 def assess_carousel_relevance(carousel_data: list[dict]) -> list[dict]:
     """Heuristic: does the slide topic (extracted from text) match the link URL?
 
     Returns list of {href, slide_text, relevant (bool|None), reason}.
-    relevant=None means we couldn't determine the topic.
+    relevant=None means we couldn't determine the topic (or the signal was too
+    weak to confidently call it a mismatch) — only a genuinely strong signal
+    (a named vehicle model, or any other distinctive word in the slide's own
+    text, entirely absent from the destination URL) ever produces
+    relevant=False, since that's what actually surfaces as a FAIL in the
+    report and a wrong call there is worse than staying silent.
     """
     results = []
 
@@ -235,8 +292,9 @@ def assess_carousel_relevance(carousel_data: list[dict]) -> list[dict]:
                 continue
 
             href_lower = href.lower()
+            content_words = _content_words(f"{slide_text} {link_text}")
 
-            # 1. Vehicle model match
+            # 1. Known vehicle model match (fast, precise path for common models)
             matched_model = None
             for model_key, url_variants in _VEHICLE_MODELS:
                 if model_key in slide_text or model_key in link_text:
@@ -246,6 +304,13 @@ def assess_carousel_relevance(carousel_data: list[dict]) -> list[dict]:
             if matched_model:
                 model_key, url_variants = matched_model
                 in_url = any(v in href_lower for v in url_variants)
+                if not in_url:
+                    # Our curated url_variants for this model might just not
+                    # match this particular site's slug convention — fall
+                    # back to the generic word-overlap check before calling
+                    # it a mismatch.
+                    fallback = _matching_url_word(content_words, href_lower)
+                    in_url = fallback is not None
                 results.append({
                     "href": href,
                     "slide_text": slide.get("slide_text") or "",
@@ -257,7 +322,28 @@ def assess_carousel_relevance(carousel_data: list[dict]) -> list[dict]:
                 })
                 continue
 
-            # 2. Offer / topic match
+            # 2. Generic content-word overlap — catches ANY model/brand name
+            #    not in the fixed list above (e.g. a make/model _VEHICLE_MODELS
+            #    has never heard of) by checking whether a distinctive word
+            #    from the slide's own text literally appears in its own
+            #    destination URL. This is what makes the check brand-agnostic
+            #    instead of depending on an inherently incomplete model list.
+            matched_word = _matching_url_word(content_words, href_lower)
+            if matched_word:
+                results.append({
+                    "href": href,
+                    "slide_text": slide.get("slide_text") or "",
+                    "relevant": True,
+                    "reason": f'Slide text mentions "{matched_word}" — URL matches',
+                })
+                continue
+
+            # 3. Offer / topic match — a weaker, generic-category signal
+            #    (e.g. "inventory", "specials"). Confirmed matches are still
+            #    reported as relevant; an absence of the topic's keywords in
+            #    the URL is NOT strong enough on its own to call it a
+            #    mismatch (this exact tier is what produced false positives
+            #    on real audits), so that case is left undetermined instead.
             matched_topic = None
             for topic, url_kws in _OFFER_TOPIC_MAP.items():
                 if topic in slide_text or topic in link_text:
@@ -270,15 +356,15 @@ def assess_carousel_relevance(carousel_data: list[dict]) -> list[dict]:
                 results.append({
                     "href": href,
                     "slide_text": slide.get("slide_text") or "",
-                    "relevant": in_url,
+                    "relevant": True if in_url else None,
                     "reason": (
                         f'Slide topic "{topic}" — URL matches' if in_url
-                        else f'Slide topic "{topic}" but URL does not look related'
+                        else f'Slide topic "{topic}" — could not confirm URL relevance'
                     ),
                 })
                 continue
 
-            # 3. Cannot determine topic
+            # 4. Cannot determine topic
             results.append({
                 "href": href,
                 "slide_text": slide.get("slide_text") or "",
