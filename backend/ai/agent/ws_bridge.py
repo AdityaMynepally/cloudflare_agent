@@ -224,7 +224,6 @@ class ExtensionBridge:
             return False
         self._pending_future.set_result(data)
         return True
-        return False
 
     @property
     def has_pending(self) -> bool:
@@ -268,16 +267,4 @@ class ExtensionBridge:
         cmd: dict = {"type": "capture_feature_click", "clickText": click_text}
         if url:
             cmd["url"] = url
-        return await self.send_with_retry(cmd)
-
-    async def capture_history_report_check(
-        self, url: Optional[str] = None, href: Optional[str] = None, platform: str = "",
-    ) -> dict:
-        cmd: dict = {"type": "capture_history_report_check"}
-        if url:
-            cmd["url"] = url
-        if href:
-            cmd["href"] = href
-        if platform:
-            cmd["platform"] = platform
         return await self.send_with_retry(cmd)

@@ -171,7 +171,7 @@ def extract_history_reports(links: list) -> dict:
     Matches against href (domain OR internal redirect path like /autocheck/) and,
     only as a fallback, link text / aria-label keywords.
 
-    Returns {found, count, links: [{platform, href, text, opens_new_tab}]}
+    Returns {found, count, links: [{platform, href, text}]}
     """
     def _detect_platform_strong(href_lower: str) -> Optional[str]:
         """Only trust an actual known report-provider domain/redirect path."""
@@ -214,7 +214,6 @@ def extract_history_reports(links: list) -> dict:
             'platform': None,
             'href': original_href,
             'text': (link.get('text', '') or '')[:80],
-            'opens_new_tab': link.get('opens_new_tab', False),
         }
 
         strong_platform = _detect_platform_strong(href_lower)
@@ -273,32 +272,39 @@ async def verify_history_report_links(reports: list) -> list:
 
 
 def build_history_reports_check(
-    links: list,
+    raw_reports: dict,
     verified_reports: list,
     is_preowned: bool,
     vdp_url: str = '',
     vdp_title: str = '',
 ) -> dict:
-    """Combine raw and verified history report info into a summary dict for one VDP."""
-    raw = extract_history_reports(links)
-    # Once modal-interaction checks have run (see orchestrator's
-    # _check_vdp_history_reports), verified_reports may have corrected
-    # `ok`/`opens_new_tab` for entries that don't HTTP-verify but do open
-    # correctly in a modal — use that corrected view consistently for the
-    # new-tab summary too, not the pre-check `raw` list, or a report we just
-    # confirmed opens fine in a modal would still get flagged "missing new tab".
-    source = verified_reports if verified_reports else raw['links']
+    """Combine raw and verified history report info into a summary dict for one VDP.
+
+    raw_reports: the caller's already-computed {found, count, links} — pass
+    the SAME dict used to decide what to verify (see _check_vdp_history_reports),
+    not a freshly re-extracted one. A report can be found via a widget
+    (capture's inventory_data.history_reports) rather than via the page's
+    generic link list, and re-deriving raw here from `links` alone used to
+    silently lose those — they'd only reappear via the now-removed modal-click
+    fallback, which happened to route around the gap instead of fixing it.
+    """
+    # Merge: every report we found gets displayed, regardless of whether it
+    # could be HTTP-verified. A report with no navigable href (an iframe/JS
+    # widget trigger, not a plain link) previously needed a simulated click
+    # to confirm it "works" — that's no longer done at all, so those just
+    # show up unverified (no ok/status_code) rather than being silently
+    # dropped or guessed at.
+    verified_by_href = {r['href']: r for r in verified_reports if r.get('href')}
+    source = [verified_by_href.get(r['href'], r) if r.get('href') else r for r in raw_reports['links']]
     broken_links = [r for r in verified_reports if not r.get('ok')]
     return {
         'vdp_url': vdp_url,
         'vdp_title': vdp_title,
         'is_preowned': is_preowned,
-        'found': raw['found'],
-        'count': raw['count'],
+        'found': raw_reports['found'],
+        'count': raw_reports['count'],
         'links': source,
         'all_work': all(r.get('ok') for r in verified_reports) if verified_reports else None,
-        'all_new_tab': all(r.get('opens_new_tab') for r in source) if source else None,
-        'missing_new_tab': [r for r in source if not r.get('opens_new_tab')],
         'broken_links': broken_links,
     }
 
@@ -312,17 +318,14 @@ def aggregate_history_reports_check(vehicle_checks: list) -> dict:
     if not vehicle_checks:
         return {
             'is_preowned': False, 'found': False, 'count': 0, 'links': [],
-            'all_work': None, 'all_new_tab': None, 'missing_new_tab': [],
-            'broken_links': [], 'vehicles': [], 'vehicles_checked': 0,
+            'all_work': None, 'broken_links': [], 'vehicles': [], 'vehicles_checked': 0,
         }
 
     preowned = [v for v in vehicle_checks if v['is_preowned']]
 
-    all_links       = [l for v in preowned for l in v['links']]
-    all_broken      = [l for v in preowned for l in v['broken_links']]
-    all_missing_tab = [l for v in preowned for l in v['missing_new_tab']]
-    work_flags      = [v['all_work'] for v in preowned if v['all_work'] is not None]
-    tab_flags       = [v['all_new_tab'] for v in preowned if v['all_new_tab'] is not None]
+    all_links  = [l for v in preowned for l in v['links']]
+    all_broken = [l for v in preowned for l in v['broken_links']]
+    work_flags = [v['all_work'] for v in preowned if v['all_work'] is not None]
 
     return {
         'is_preowned': bool(preowned),
@@ -330,8 +333,6 @@ def aggregate_history_reports_check(vehicle_checks: list) -> dict:
         'count': sum(v['count'] for v in preowned),
         'links': all_links,
         'all_work': all(work_flags) if work_flags else None,
-        'all_new_tab': all(tab_flags) if tab_flags else None,
-        'missing_new_tab': all_missing_tab,
         'broken_links': all_broken,
         'vehicles': vehicle_checks,
         'vehicles_checked': len(vehicle_checks),

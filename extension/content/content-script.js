@@ -573,8 +573,18 @@
       '.top-nav', '.header-nav', '#mainmenu', '.main-menu',
     ];
 
-    function isRealNavHref(href) {
+    function isRealNavHref(href, rawHref) {
       if (!href || href.startsWith('javascript:') || href.startsWith('tel:') || href.startsWith('mailto:')) return false;
+      // A raw href of exactly "#" (or blank) is a universal no-op/placeholder
+      // pattern — often a JS-hooked button, or (confirmed on a real site) a
+      // theme-generated empty spacer/layout menu item explicitly marked
+      // class="invisible" with link text literally "hidden". A bare "#"
+      // normalizes to an EMPTY hash once resolved (new URL(...).hash is ''
+      // for a trailing lone "#"), so the resolved-URL check below can't
+      // catch it — this needs the original attribute value, not the
+      // resolved one, to tell "#" apart from a legitimate same-page anchor
+      // like "#footer".
+      if (rawHref !== undefined && rawHref.trim().replace(/\s+/g, '') === '#') return false;
       try {
         const u = new URL(href);
         if (u.hash && (u.pathname === '/' || u.pathname === '') && !u.search) return false;
@@ -624,7 +634,7 @@
     let bestRawLinks = [];
     let bestDistinctCount = 0;
     for (const el of candidates) {
-      const links = [...el.querySelectorAll('a[href]')].filter(a => isRealNavHref(a.href));
+      const links = [...el.querySelectorAll('a[href]')].filter(a => isRealNavHref(a.href, a.getAttribute('href')));
       const distinctCount = new Set(links.map(a => a.href)).size;
       if (distinctCount > bestDistinctCount) {
         bestDistinctCount = distinctCount;
@@ -933,7 +943,16 @@
     // since schema.org data can be stale — see note above.
     const domHours = {};
     {
-      const HOURS_RE = /(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s*[-–to]+\s*(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)/i;
+      // Separator: a dash/en-dash, the word "to", OR (only when the first
+      // time already carries an explicit am/pm marker) bare whitespace with
+      // nothing between — confirmed real format: a table with Open/Close in
+      // separate <td> cells ("Monday 8:30AM 8:00PM", no dash at all once
+      // collapsed). The am/pm lookbehind gate on the whitespace-only case
+      // is deliberate — without it, any two adjacent bare numbers
+      // separated by whitespace (unrelated to hours entirely) would false-
+      // match; requiring the first side to already look unambiguously like
+      // a clock time makes that fallback safe.
+      const HOURS_RE = /(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s*(?:[-–]+\s*|\s+to\s+|(?<=am|pm)\s+)(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)/i;
 
       // Map abbreviated names (Mon/Tue/…) and full names to canonical full names
       const DAY_ABBR_MAP = {
@@ -987,6 +1006,14 @@
         // up the word "closed" from a DIFFERENT day's row instead, marking
         // every day in the table closed just because one of them is.
         if (el.tagName === 'TR') return false;
+        // Same leak, different trigger: if this element's own text ALREADY
+        // contains a time range, it's a self-contained row with nothing
+        // ambiguous about it — climbing to the parent anyway can still pick
+        // up "Closed" from a completely different day's row sharing that
+        // parent (confirmed: a real "Tue - Wed, Fri 9:00 AM - 6:00 PM" row
+        // got marked closed this way, purely because Sunday's "Closed"
+        // elsewhere in the same shared <ul> got picked up).
+        if (HOURS_RE.test(elText)) return false;
         const parentText = el.parentElement
           ? (el.parentElement.textContent || '').trim().replace(/\s+/g, ' ')
           : '';
@@ -1002,9 +1029,22 @@
         '[class*="title" i],[class*="heading" i],[class*="header" i],[class*="label" i]';
       const SALES_DEPT_RE = /\b(sales|dealership|showroom)\b/i;
       const OTHER_DEPT_RE = /\b(service|parts|body\s*shop|collision|repair|rental|tires?)\b/i;
-      const hoursHeadingEls = [...document.querySelectorAll(DEPT_HEADING_SEL)]
+      // A day-of-week label cell (e.g. <td class="mondayHoursLabel">Monday</td>)
+      // matches [class*="label" i] purely by CSS naming convention, even
+      // though it's a data-row label, not a real section heading — and once
+      // treated as one, it becomes the "nearest preceding heading" for
+      // every row AFTER it, poisoning hasPrecedingHoursHeading() for the
+      // rest of the table (confirmed: Monday's own label cell blocked
+      // Tuesday through Sunday from ever being accepted). Excluded here by
+      // checking the element's own TEXT, not its class — a genuine section
+      // heading is never just a bare day name and nothing else.
+      const BARE_DAY_RE = /^(Mon(?:day)?|Tue(?:sday)?|Wed(?:nesday)?|Thu(?:rsday)?|Fri(?:day)?|Sat(?:urday)?|Sun(?:day)?)$/i;
+      const allHeadingEls = [...document.querySelectorAll(DEPT_HEADING_SEL)]
+        .filter(el => !BARE_DAY_RE.test((el.textContent || '').trim()));
+      const hoursHeadingEls = allHeadingEls
         .map(el => ({ el, text: (el.textContent || '').trim() }))
         .filter(h => h.text.length < 60 && /\bhours\b/i.test(h.text));
+      const hoursHeadingElSet = new Set(hoursHeadingEls.map(h => h.el));
 
       // Only headings that unambiguously name a department are classified — a
       // generic "Hours" heading (no department word) is left untouched so it
@@ -1013,8 +1053,35 @@
         .filter(h => SALES_DEPT_RE.test(h.text) || OTHER_DEPT_RE.test(h.text))
         .map(h => ({ el: h.el, exclude: !SALES_DEPT_RE.test(h.text) }));
 
+      // Some sites encode department purely structurally, with NO visible
+      // text caption anywhere near the hours table at all — confirmed real
+      // pattern: Bootstrap tabs where each department's table lives in its
+      // own <div id="SalesHours">/<div id="ServiceHours">/<div id="PartsHours">,
+      // with the department name only ever appearing in that id attribute.
+      // The sibling/heading-based detection above is blind to this (there's
+      // nothing to find), so walk UP from the candidate element looking for
+      // a container whose id/class itself names a department. This is
+      // checked FIRST wherever it applies — containment is a stronger,
+      // more direct signal than "nearest preceding heading" inference.
+      const DEPT_CONTAINER_RE = /(sales|dealership|showroom|service|parts|bodyshop|body-shop|collision)[-_]?hours/i;
+      function containerDept(el) {
+        let node = el;
+        for (let hops = 0; node && hops < 12; hops++) {
+          const idc = (node.id || '') + ' ' + (typeof node.className === 'string' ? node.className : '');
+          const m = DEPT_CONTAINER_RE.exec(idc);
+          if (m) {
+            const isSales = /^(sales|dealership|showroom)$/i.test(m[1]);
+            return { found: true, exclude: !isSales };
+          }
+          node = node.parentElement;
+        }
+        return { found: false, exclude: false };
+      }
+
       // Returns true if `el` sits under a non-sales department heading (Service/Parts/…)
       function isExcludedDept(el) {
+        const viaContainer = containerDept(el);
+        if (viaContainer.found) return viaContainer.exclude;
         let result = false;
         for (const h of deptHeadings) {
           const pos = h.el.compareDocumentPosition(el);
@@ -1032,17 +1099,31 @@
       // Once a day's slot is filled it's never overwritten (see the
       // `if (domHours[day]) continue` guards below), so noise appearing
       // earlier in the DOM than the real widget would permanently win.
-      // When the page has at least one "*Hours*" heading anywhere (dept-
-      // specific or generic, e.g. "Hours & Directions"), require a match to
-      // fall after the first one — real hours content is reached that way;
-      // stray day/time mentions earlier in the page (nav, hero banners,
-      // reviews) are not. Pages with no hours heading at all keep the old
-      // permissive behavior, so an unlabeled single hours widget still works.
+      //
+      // Requiring a match to fall after SOME "*Hours*" heading ANYWHERE on
+      // the page (the original version of this check) turned out to be no
+      // protection at all: a persistent nav link like "Hours & Directions"
+      // sits at the very top of every page, so virtually everything below
+      // it trivially counts as "after an hours heading" even when it isn't
+      // actually part of any hours widget (confirmed: this is exactly why
+      // a stray promo banner kept winning over the real Sales Hours table
+      // on a real site). What actually matters is the NEAREST preceding
+      // heading of any kind — same nearest-preceding-heading approach as
+      // isExcludedDept() above — with the match accepted only if that
+      // specific nearest heading is itself hours-tagged.
       function hasPrecedingHoursHeading(el) {
+        // Structurally inside a recognized department container (see
+        // containerDept above) — that's already unambiguous confirmation
+        // this is real hours content, no heading-text inference needed.
+        if (containerDept(el).found) return true;
         if (!hoursHeadingEls.length) return true;
-        return hoursHeadingEls.some(
-          h => h.el.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING
-        );
+        let nearest = null;
+        for (const h of allHeadingEls) {
+          const pos = h.compareDocumentPosition(el);
+          if (pos & Node.DOCUMENT_POSITION_FOLLOWING) nearest = h;
+          else break;
+        }
+        return nearest !== null && hoursHeadingElSet.has(nearest);
       }
 
       // Include tr so table-row text is scanned even when day/time are in separate cells
@@ -1068,7 +1149,66 @@
         ).size;
         if (distinctDaysMentioned > 2) continue;
 
-        // Try to match a day range: "Mon – Fri" / "Monday - Friday" / "Mon-Fri"
+        // Try to match a NON-contiguous day list FIRST: "Mon, Thu" / "Tue -
+        // Wed, Fri" / "Mon and Thu" — checked before the plain range below
+        // because RANGE_RE would otherwise greedily match just the "Tue -
+        // Wed" prefix of a longer "Tue - Wed, Fri" list and stop there,
+        // silently dropping "Fri" entirely (confirmed on a real site: this
+        // is exactly what happened). Confirmed real-world format: a
+        // dealer's own Sales Hours widget listing "Mon, Thu" as one row
+        // sharing one time — plain RANGE_RE doesn't match (no dash) and
+        // SINGLE_DAY_RE doesn't match (day isn't immediately followed by
+        // whitespace/colon/end, a comma comes next), so without this branch
+        // the row is invisible to the scanner and the days it names never
+        // get filled from their real source.
+        //
+        // Trailing boundary is `(?![a-zA-Z])`, not `\b` — a day name is
+        // often immediately followed by a time with no space in between
+        // once sibling elements' text is concatenated (e.g. "Fri9:00 AM"),
+        // and `\b` does NOT match between a letter and a digit (both count
+        // as "word" characters), so `\b` alone silently failed to match the
+        // real case that motivated this branch in the first place.
+        const LIST_RE = /^(?:(?:Mon(?:day)?|Tue(?:sday)?|Wed(?:nesday)?|Thu(?:rsday)?|Fri(?:day)?|Sat(?:urday)?|Sun(?:day)?)\s*[-–]?\s*(?:Mon(?:day)?|Tue(?:sday)?|Wed(?:nesday)?|Thu(?:rsday)?|Fri(?:day)?|Sat(?:urday)?|Sun(?:day)?)?(?:\s*,\s*|\s+and\s+))+(Mon(?:day)?|Tue(?:sday)?|Wed(?:nesday)?|Thu(?:rsday)?|Fri(?:day)?|Sat(?:urday)?|Sun(?:day)?)(?![a-zA-Z])/i;
+        const listMatch = LIST_RE.exec(text);
+        if (listMatch) {
+          if (isExcludedDept(el) || !hasPrecedingHoursHeading(el)) continue;
+          // Expand each comma/and-separated segment — a segment can itself
+          // be a dash-range ("Tue - Wed") or a single day ("Mon"/"Fri").
+          const segments = listMatch[0].split(/\s*,\s*|\s+and\s+/i);
+          const days = [];
+          for (const seg of segments) {
+            const segRange = /^(Mon(?:day)?|Tue(?:sday)?|Wed(?:nesday)?|Thu(?:rsday)?|Fri(?:day)?|Sat(?:urday)?|Sun(?:day)?)\s*[-–]\s*(Mon(?:day)?|Tue(?:sday)?|Wed(?:nesday)?|Thu(?:rsday)?|Fri(?:day)?|Sat(?:urday)?|Sun(?:day)?)\b/i.exec(seg.trim());
+            if (segRange) {
+              const s = resolveDay(segRange[1]), e = resolveDay(segRange[2]);
+              if (s && e) days.push(...expandDayRange(s, e));
+              continue;
+            }
+            const segDay = /^(Mon(?:day)?|Tue(?:sday)?|Wed(?:nesday)?|Thu(?:rsday)?|Fri(?:day)?|Sat(?:urday)?|Sun(?:day)?)\b/i.exec(seg.trim());
+            if (segDay) {
+              const d = resolveDay(segDay[1]);
+              if (d) days.push(d);
+            }
+          }
+          if (days.length >= 2) {
+            const closed = isClosed(el, text);
+            const hm = closed ? null : findTime(el, text);
+            for (const day of days) {
+              if (domHours[day]) continue;
+              if (closed) {
+                domHours[day] = 'Closed';
+              } else if (hm) {
+                domHours[day] = `${hm[1].trim()}-${hm[2].trim()}`;
+                info.raw_hours_text.push(text.substring(0, 100));
+              }
+            }
+            continue;
+          }
+        }
+
+        // Try to match a plain contiguous day range: "Mon – Fri" / "Monday
+        // - Friday" / "Mon-Fri" — only reached when LIST_RE above didn't
+        // match (i.e. there's no comma/"and" continuation), so this no
+        // longer risks truncating a longer list at just its first two days.
         const RANGE_RE = /^(Mon(?:day)?|Tue(?:sday)?|Wed(?:nesday)?|Thu(?:rsday)?|Fri(?:day)?|Sat(?:urday)?|Sun(?:day)?)\s*[-–]\s*(Mon(?:day)?|Tue(?:sday)?|Wed(?:nesday)?|Thu(?:rsday)?|Fri(?:day)?|Sat(?:urday)?|Sun(?:day)?)\b/i;
         const rangeMatch = RANGE_RE.exec(text);
         if (rangeMatch) {

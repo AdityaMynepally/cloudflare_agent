@@ -313,7 +313,7 @@ class AuditSession:
     srp_filters_checked: int = 0                                  # number of filters tested
     srp_filter_type: str = "none"                                 # 'select' | 'url_params' | 'none'
     srp_filter_note: str = ""                                     # human-readable note when url_params
-    history_reports_check: Optional[dict] = None                  # {found, all_work, all_new_tab, links, vehicles}
+    history_reports_check: Optional[dict] = None                  # {found, all_work, links, vehicles}
     model_year_check: Optional[dict] = None                       # {outdated, ok, cutoff_year}
     inventory_expired_dates: list = field(default_factory=list)   # expired dates on inv/VDP pages
     # Sprint 2 — dealership feature detection (aggregated across all pages)

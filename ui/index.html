@@ -1516,7 +1516,7 @@
     }
 
     fillCard('fc-links', 'fc-links-count', 'fc-links-list', bl, l =>
-      `<li><span class="badge-status">${l.status_code || '?'}</span>${escHtml(l.url || '')} <small style="color:#555">(${escHtml(shortHost(l.source_page || ''))})</small></li>`
+      `<li><span class="badge-status">${l.status_code || '?'}</span><a href="${escHtml(l.url || '')}" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:underline;text-decoration-color:#444">${escHtml(l.url || '')}</a> <small style="color:#555">(${escHtml(shortHost(l.source_page || ''))})</small></li>`
     );
 
     fillCard('fc-images', 'fc-images-count', 'fc-images-list', bi, i =>
@@ -1528,7 +1528,7 @@
     );
 
     fillCard('fc-jserrors', 'fc-jserrors-count', 'fc-jserrors-list', je, e =>
-      `<li><small style="color:#555">${escHtml(shortHost(e.source_page || ''))} ${e.viewport ? '[' + e.viewport + ']' : ''}</small> ${escHtml(e.message || '')}</li>`
+      `<li><small style="color:#555"><a href="${escHtml(e.source_page || '')}" target="_blank" rel="noopener noreferrer" style="color:inherit">${escHtml(shortHost(e.source_page || ''))}</a> ${e.viewport ? '[' + e.viewport + ']' : ''}</small> ${escHtml(e.message || '')}</li>`
     );
 
     // Page load times
@@ -1982,7 +1982,6 @@
           : 'Could not confirm pre-owned VDP — history reports check skipped';
         html += invCard('na', 'History Reports', naMsg, '');
         html += invCard('na', 'Report Links Work', isConfirmedNew ? 'N/A — new vehicle VDP' : 'N/A — VDP type undetermined', '');
-        html += invCard('na', 'Reports Open in New Tab', isConfirmedNew ? 'N/A — new vehicle VDP' : 'N/A — VDP type undetermined', '');
       } else {
         // Vehicles checked (up to 4 pre-owned VDPs)
         const vehiclesChecked = histCheck.vehicles || [];
@@ -2023,20 +2022,8 @@
             `<li><span class="inv-badge fail">${r.status_code || 'error'}</span><span class="inv-badge warn">${escHtml(r.platform)}</span>${r.href ? `<a href="${escHtml(r.href)}" target="_blank" rel="noopener" style="color:var(--red)">${escHtml(truncUrl(r.href))}</a>` : escHtml(r.text || '')}</li>`
           );
           html += invCard(linksSt, 'History Report Links Work', linksNote, invItemList(brokenItems));
-
-          // Open in new tab?
-          const noNewTab = histCheck.missing_new_tab || [];
-          const tabSt = noNewTab.length ? 'warn' : 'pass';
-          const tabNote = noNewTab.length
-            ? `${noNewTab.length} history report link(s) do not open in a new tab`
-            : 'All history report links open in a new tab';
-          const tabItems = noNewTab.slice(0, 8).map(r =>
-            `<li><span class="inv-badge warn">no new tab</span>${escHtml(r.platform)} — ${r.href ? escHtml(truncUrl(r.href)) : escHtml(r.text || '')}</li>`
-          );
-          html += invCard(tabSt, 'History Reports Open in New Tab', tabNote, invItemList(tabItems));
         } else {
           html += invCard('na', 'History Report Links Work', 'No links to verify', '');
-          html += invCard('na', 'History Reports Open in New Tab', 'No links found', '');
         }
       }
     } else {
@@ -2116,7 +2103,11 @@
     try {
       const u = new URL(url);
       const p = u.pathname + u.search;
-      return p.length > 50 ? p.substring(0, 47) + '…' : p || u.hostname;
+      // A bare "/" reads as meaningless out of context (e.g. in a nav
+      // duplicates list) — show the full homepage URL instead so it's
+      // unambiguous which page is actually being referenced.
+      if (p === '/' || p === '') return u.origin + '/';
+      return p.length > 50 ? p.substring(0, 47) + '…' : p;
     } catch { return String(url).substring(0, 50); }
   }
 

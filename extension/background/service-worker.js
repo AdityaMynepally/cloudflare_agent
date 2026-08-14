@@ -759,6 +759,19 @@ wsClient.onCommand(async (command) => {
           // ─── Strategy A: detect standard <select> filter controls ───────────
           // Exclude selects inside <header>, <footer>, <nav> and tiny utility selects.
           function isInsideExcluded(el) {
+            // Real inventory-filter selects trigger an AJAX search on change —
+            // they're essentially never wrapped in an actual <form> tag. A
+            // lead-capture / quote-request / order-parts form (Gravity Forms
+            // and similar) IS always a real <form>, and can coincidentally
+            // live inside a "sidebar" or "filter"-classed container that
+            // matches the broad class-based selectors below, right down to
+            // having a "Year" dropdown of its own — confirmed on a real site:
+            // this previously interacted with a "preferred contact method"
+            // (Phone/Email/Text) dropdown and an unrelated parts-order form's
+            // Year field as if they were vehicle filters, wasting the whole
+            // time budget on fields with nothing to do with inventory, and
+            // leaving zero room to find the page's real filters (if any).
+            if (el.closest('form')) return true;
             let p = el.parentElement;
             while (p) {
               const tag = p.tagName.toLowerCase();
@@ -1158,71 +1171,6 @@ wsClient.onCommand(async (command) => {
       wsClient.sendCaptureResult({
         type: 'feature_click_result',
         ...clickResult,
-        screenshot_base64: screenshot.base64,
-        screenshot_error: screenshot.error,
-      }, command.req_id);
-    }
-
-    if (command.type === 'capture_history_report_check') {
-      // Some vehicle-history-report links/widgets (Carfax/AutoCheck/etc.)
-      // don't have a normal navigable href — a "#"/javascript: trigger, or a
-      // class/img-based widget with no wrapping anchor at all — so a plain
-      // HTTP check can never confirm they work. Click whatever we can find
-      // (by exact href match, or by platform-name widget selector as a
-      // fallback) and check whether a modal appears; a report that opens
-      // correctly in a modal should count as present, not broken.
-      const tabId = await getOrCreateAgentTab();
-      if (command.url) {
-        await navigateTab(tabId, command.url);
-        await waitForTabLoad(tabId);
-        await sleep(1500);
-      }
-
-      const results = await chrome.scripting.executeScript({
-        target: { tabId },
-        func: async (href, platform) => {
-          function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
-          function countModalLikeVisible() {
-            return [...document.querySelectorAll('[role="dialog"], .modal, [class*="modal" i], iframe')]
-              .filter((el) => {
-                const r = el.getBoundingClientRect();
-                const style = window.getComputedStyle(el);
-                return r.width > 300 && r.height > 300 &&
-                       style.display !== 'none' && style.visibility !== 'hidden';
-              }).length;
-          }
-
-          const platformLower = (platform || '').toLowerCase();
-          let target = null;
-          if (href) {
-            target = [...document.querySelectorAll('a[href]')].find((a) => a.href === href);
-          }
-          if (!target && platformLower) {
-            target = document.querySelector(
-              `[class*="${platformLower}" i], img[src*="${platformLower}" i], img[alt*="${platformLower}" i]`
-            );
-            if (target && target.tagName === 'IMG') {
-              target = target.closest('a') || target;
-            }
-          }
-          if (!target) return { found: false };
-
-          const beforeCount = countModalLikeVisible();
-          target.scrollIntoView({ block: 'center' });
-          target.click();
-          await sleep(2000);
-          const afterCount = countModalLikeVisible();
-
-          return { found: true, modal_detected: afterCount > beforeCount };
-        },
-        args: [command.href || null, command.platform || ''],
-      });
-
-      const checkResult = results[0]?.result || { found: false };
-      const screenshot = await captureScreenshot(tabId);
-      wsClient.sendCaptureResult({
-        type: 'history_report_check_result',
-        ...checkResult,
         screenshot_base64: screenshot.base64,
         screenshot_error: screenshot.error,
       }, command.req_id);

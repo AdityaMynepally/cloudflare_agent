@@ -682,42 +682,20 @@ class AuditOrchestrator:
 
         verified: list = []
         if is_preowned and raw_reports["found"]:
+            # Only a plain HTTP reachability check — no clicking/navigating.
+            # History report widgets come in two shapes (a real anchor link,
+            # or an iframe/JS-widget trigger with no navigable href at all),
+            # and trying to uniformly verify both by opening/clicking them
+            # produced confusing, inconsistent results. Now: check what has
+            # a URL, display everything found either way (see
+            # build_history_reports_check), and leave hrefless widgets
+            # simply unverified rather than guessing via a simulated click.
             eligible = [r for r in raw_reports["links"] if r.get("href")]
             sample = random.sample(eligible, min(4, len(eligible)))
             verified = await verify_history_report_links(sample)
 
-            # Some report links/widgets have no normal navigable href (a
-            # "#"/javascript: trigger, or a class/img-based widget with no
-            # anchor at all) — verify_history_report_links() unconditionally
-            # marks those "not ok" since there's nothing to HTTP-check. Many
-            # of these actually work fine as an in-page modal, so before
-            # calling them broken, interactively click and check for a
-            # modal — a report that opens correctly that way counts as
-            # present, not broken. Capped at 2 per vehicle to bound audit time.
-            verified_hrefs = {r.get("href") for r in verified if r.get("href")}
-            needs_modal_check = [
-                r for r in raw_reports["links"]
-                if not r.get("href") or r.get("href") not in verified_hrefs
-            ]
-            for report in needs_modal_check[:2]:
-                try:
-                    result = await bridge.capture_history_report_check(
-                        vdp_url, href=report.get("href"), platform=report.get("platform", ""),
-                    )
-                except Exception as e:
-                    logger.warning(f"History report modal check failed (non-fatal): {e}")
-                    continue
-                if result.get("found") and result.get("modal_detected"):
-                    verified.append({
-                        **report,
-                        "status_code": None,
-                        "ok": True,
-                        "opens_new_tab": True,  # opens correctly (as a modal) — counts as present
-                        "modal_detected": True,
-                    })
-
         return build_history_reports_check(
-            links, verified, is_preowned, vdp_url=vdp_url, vdp_title=vdp_title,
+            raw_reports, verified, is_preowned, vdp_url=vdp_url, vdp_title=vdp_title,
         )
 
     def _find_preowned_vehicle_links(
@@ -864,11 +842,13 @@ class AuditOrchestrator:
             })
             try:
                 # Interactively tests up to 3 filters x 4 options with a 2.5s
-                # settle each — ~30s worst case, right at (and in practice
-                # observed consistently exceeding) the bridge's 30s default,
-                # so this has been silently timing out and failing on every
-                # single audit run regardless of what site was being tested.
-                filter_result = await bridge.send_and_wait({"type": "check_srp_filters"}, timeout=45)
+                # settle each — ~30s of pure sleep time alone in the worst
+                # case, before adding page-reaction/network overhead on top.
+                # A 45s ceiling still wasn't enough margin on a real site
+                # (observed timing out at exactly 45s) — 60s leaves real
+                # headroom over the ~30s baseline instead of just barely
+                # covering it.
+                filter_result = await bridge.send_and_wait({"type": "check_srp_filters"}, timeout=60)
                 session.srp_filter_zero_results = filter_result.get("zero_results", [])
                 session.srp_filters_checked     = filter_result.get("filters_checked", 0)
                 session.srp_filter_type         = filter_result.get("filter_type", "none")
