@@ -84,11 +84,19 @@ INVENTORY_URL_PATTERNS = [
     "/certified-pre-owned", "/cpo",
 ]
 
-# Number of distinct pre-owned VDPs to check for history-report links.
-HISTORY_REPORT_VEHICLE_TARGET = 4
+# Number of distinct pre-owned VDPs to check for history-report links —
+# min 3, max 5 (the primary VDP + up to 4 extra candidates).
+HISTORY_REPORT_VEHICLE_TARGET = 5
 # Stop scanning candidate links after this many attempts, even if the target
 # hasn't been reached (avoids a pathological loop on sparsely-linked SRPs).
 HISTORY_REPORT_CANDIDATE_ATTEMPTS = 8
+
+# Pre-owned/used SRP is paginated in the audit rather than sampled from a
+# single page — one page only covers ~10-20 of what can be hundreds of used
+# vehicles, missing most broken links/images/expired content. Aim for at
+# least MIN, stop following "next page" links past MAX.
+PREOWNED_SRP_MIN_PAGES = 3
+PREOWNED_SRP_MAX_PAGES = 5
 
 # URL path segments that indicate a VDP (vehicle detail page). These alone are
 # NOT sufficient — "/new/", "/cars/" etc. also match body-style/category pages
@@ -191,6 +199,22 @@ class AuditOrchestrator:
                 session.fail(f"Discovery failed: {discover_result['error']}")
                 await emit("error", session.error)
                 return session
+
+            # Some sites 301-redirect the originally-requested URL to a
+            # canonical host (confirmed: a bare non-"www" request redirecting
+            # to "www.") — every link captured on the landed page resolves
+            # against THAT origin, so continuing to use the originally-typed
+            # target_url's hostname for matching (_find_preowned_url below,
+            # and anywhere else that compares a link's host against this
+            # "target") would silently reject links that are perfectly real,
+            # just on a different-looking (but equivalent, post-redirect)
+            # host than what was typed. Adopt the landed URL as canonical
+            # from here on — the extension already does the equivalent for
+            # its own categorized_links/internal_links computation.
+            landed_url = (discover_result.get("metadata") or {}).get("url")
+            if landed_url:
+                target_url = landed_url
+                session.target_url = landed_url
 
             # Build page list: homepage + categorized links
             urls_to_audit = [target_url]
@@ -535,9 +559,6 @@ class AuditOrchestrator:
         ]
 
         # 2. URL path match against known inventory patterns
-        url_matched = None
-        text_matched = None
-
         for link in internal_links:
             href = link.get("href", "")
             text = (link.get("text", "") or "").strip().lower()
@@ -555,18 +576,23 @@ class AuditOrchestrator:
             if any(x in pathname for x in NON_INVENTORY):
                 continue
 
-            # URL pattern match (higher priority)
-            if url_matched is None and any(p in pathname for p in INVENTORY_URL_PATTERNS):
-                url_matched = href
+            # Every match is kept (not just the first of each kind) — the
+            # "prefer new" scan below needs to see every candidate to find
+            # one classified "new" even when a "used" candidate happens to
+            # sit earlier in link order. Confirmed real case: a used-SRP
+            # link's text got a (correct, separately-fixed) upgrade from
+            # empty to "used vehicles for sale", which now legitimately
+            # matches these same keywords — taking only the FIRST text
+            # match meant it silently swallowed the real "New Vehicles" link
+            # that comes later in the list, and with url_matched empty too
+            # (neither /searchnew.aspx nor /searchused.aspx match the
+            # hyphenated INVENTORY_URL_PATTERNS below), that first used-page
+            # match was the only inventory candidate ever collected.
+            if any(p in pathname for p in INVENTORY_URL_PATTERNS):
+                candidates.append(href)
 
-            # Link text match (lower priority)
-            if text_matched is None and any(kw in text for kw in INVENTORY_TEXT_KEYWORDS):
-                text_matched = href
-
-        if url_matched:
-            candidates.append(url_matched)
-        if text_matched:
-            candidates.append(text_matched)
+            if any(kw in text for kw in INVENTORY_TEXT_KEYWORDS):
+                candidates.append(href)
 
         if not candidates:
             return None
@@ -592,11 +618,25 @@ class AuditOrchestrator:
             "preowned", "certified pre-owned", "shop used", "browse used",
             "view used", "our used", "used & certified",
         ]
+        # A promotions/specials page ("Pre-Owned Specials") legitimately
+        # contains "pre-owned" and can tie the real hub label ("Pre-Owned
+        # Vehicles") on length — confirmed real case. It isn't an inventory
+        # listing at all (no full SRP, no pagination), so exclude it
+        # outright rather than relying on length/order to sort it out.
+        NON_INVENTORY_TEXT_EXCLUDE = ["special", "offer", "deal", "coupon", "promo", "rebate"]
 
         base_host = urlparse(target_url).netloc
 
-        url_matched  = None
-        text_matched = None
+        url_matched = None
+        # Every text match is kept (not just the first) — a model-specific
+        # promo link like "Pre-Owned Corvette Inventory" contains "pre-owned"
+        # just as much as the real hub label "Pre-Owned Vehicles" does, and
+        # if it happens to appear first in document order it would otherwise
+        # win outright. The SHORTEST matching label is the most reliable
+        # signal of "the general hub" — a real hub link is almost always a
+        # short, generic nav label, while any make/model-qualified variant
+        # is longer by exactly the extra qualifying words.
+        text_candidates: list[tuple[int, str]] = []
 
         for link in internal_links:
             href     = link.get("href", "") or ""
@@ -611,13 +651,81 @@ class AuditOrchestrator:
             except Exception:
                 continue
 
+            if any(x in text for x in NON_INVENTORY_TEXT_EXCLUDE):
+                continue
+
             if url_matched is None and any(p in pathname for p in PREOWNED_PATH_PATTERNS):
                 url_matched = href
 
-            if text_matched is None and any(kw in text for kw in PREOWNED_TEXT_KEYWORDS):
-                text_matched = href
+            if any(kw in text for kw in PREOWNED_TEXT_KEYWORDS):
+                text_candidates.append((len(text), href))
 
-        return url_matched or text_matched
+        if text_candidates:
+            text_candidates.sort(key=lambda pair: pair[0])
+            return text_candidates[0][1]
+
+        return url_matched
+
+    def _find_next_srp_page_url(self, links: list, current_url: str, visited: set) -> Optional[str]:
+        """Find the "next page" link on an inventory SRP (search results page).
+
+        No dealer platform exposes a consistent rel="next" or class name for
+        this, so the signal is link text: a numbered pagination link (e.g.
+        "2", "3") or a "Next"-style label, restricted to same-host links not
+        already visited this crawl. Numbered links are preferred and sorted
+        ascending — sturdier than a "Next" label, which some platforms omit
+        entirely (or only render post-JS) but which almost every platform
+        renders as explicit numbered links in the static DOM.
+        """
+        NEXT_TEXT_LABELS = {"next", "next page", "next >", "next »", ">", "»", "load more"}
+
+        base_host = urlparse(current_url).netloc
+        next_label_href = None
+        numbered_candidates: list[tuple[int, str]] = []
+
+        for link in links:
+            href = (link.get("href") or "").strip()
+            text = (link.get("text") or "").strip().lower()
+            if not href or href in visited:
+                continue
+            try:
+                if urlparse(href).netloc != base_host:
+                    continue
+            except Exception:
+                continue
+
+            if text in NEXT_TEXT_LABELS:
+                if next_label_href is None:
+                    next_label_href = href
+            elif text.isdigit():
+                numbered_candidates.append((int(text), href))
+
+        if numbered_candidates:
+            numbered_candidates.sort(key=lambda pair: pair[0])
+            for _, href in numbered_candidates:
+                if href not in visited:
+                    return href
+
+        return next_label_href
+
+    def _find_next_srp_click_target(self, pagination_info: dict, current_page_num: int) -> Optional[str]:
+        """Return the visible label to click for the next SRP page when
+        _find_next_srp_page_url() found no real href — i.e. pagination_info
+        (from getSrpPaginationInfo() in content-script.js) reported a
+        numbered/"Next" control with a placeholder href, so the only way to
+        reach the next page is to click it in place (paginate_srp WS
+        command) rather than navigate. Prefers the explicit numbered label
+        so results land on exactly page N+1; falls back to a generic "Next"
+        click when no numbered link for that page exists.
+        """
+        numbered = pagination_info.get("numbered_pages") or []
+        target_num = current_page_num + 1
+        for entry in numbered:
+            if entry.get("page") == target_num and entry.get("clickable"):
+                return str(target_num)
+        if pagination_info.get("next_clickable"):
+            return "Next"
+        return None
 
     def _extract_vehicle_link(
         self, links: list, base_url: str
@@ -881,6 +989,12 @@ class AuditOrchestrator:
             vdp_search_links = inv_links
             vdp_search_base  = inventory_url
             preowned_years: list = []
+            # Links from EVERY paginated pre-owned SRP page (not just page 1)
+            # — used below as the candidate pool for history-report VDP
+            # sampling, so "check 3-5 vehicles" can actually find 3-5
+            # distinct candidates instead of being limited to whatever a
+            # single page happened to list.
+            preowned_all_page_links: list = []
 
             # The discovery-phase link list is capped to 50 and may have missed the
             # used/pre-owned nav item — re-search using the SRP's own (uncapped) links.
@@ -898,78 +1012,137 @@ class AuditOrchestrator:
                     "status": "inventory",
                     "preownedUrl": preowned_url,
                 })
-                try:
-                    po_capture = await bridge.send_with_retry({
-                        "type": "audit_page",
-                        "url": preowned_url,
-                    })
-                    await emit("progress",
-                        f"[diag] pre-owned SRP raw response — keys: {sorted(po_capture.keys())}, "
-                        f"type field: {po_capture.get('type', '(none)')}",
-                        {"status": "inventory"},
-                    )
-                    if po_capture.get("error"):
-                        await emit("progress", f"Pre-owned SRP capture returned an error: {po_capture['error']}", {
-                            "status": "inventory",
-                        })
-                    else:
-                        vdp_search_links = po_capture.get("links", [])
-                        vdp_search_base  = preowned_url
+                # Paginate through the used/pre-owned SRP (min 3, max 5 pages) —
+                # a single page only samples ~10-20 of what can be hundreds of
+                # used vehicles, missing most broken links/images/expired
+                # content and giving an unrepresentative model-year signal.
+                visited_srp_pages: set = set()
+                page_url = preowned_url
+                pending_click_text: Optional[str] = None
+                page_num = 0
+                while (page_url or pending_click_text) and page_num < PREOWNED_SRP_MAX_PAGES:
+                    page_num += 1
+                    # Click-based pagination has no distinct URL to key off of
+                    # (see paginate_srp below) — use a synthetic label so
+                    # per-page findings still record something recognizable
+                    # in source_page/progress text, and so visited-page
+                    # dedup still has a stable key.
+                    display_url = page_url or f"{preowned_url}#page{page_num}-clicked"
+                    visited_srp_pages.add(display_url)
+                    try:
+                        if pending_click_text:
+                            po_capture = await bridge.send_with_retry({
+                                "type": "paginate_srp",
+                                "clickText": pending_click_text,
+                            })
+                        else:
+                            po_capture = await bridge.send_with_retry({
+                                "type": "audit_page",
+                                "url": page_url,
+                            })
+                        await emit("progress",
+                            f"[diag] pre-owned SRP page {page_num} raw response — keys: {sorted(po_capture.keys())}, "
+                            f"type field: {po_capture.get('type', '(none)')}",
+                            {"status": "inventory"},
+                        )
+                        if po_capture.get("error"):
+                            await emit("progress", f"Pre-owned SRP page {page_num} capture returned an error: {po_capture['error']}", {
+                                "status": "inventory",
+                            })
+                            break
+
+                        page_links = po_capture.get("links", [])
+                        preowned_all_page_links.extend(page_links)
                         po_meta = po_capture.get("metadata") or {}
                         await emit("progress",
-                            f"Pre-owned SRP captured — {len(vdp_search_links)} link(s) found on page "
+                            f"Pre-owned SRP page {page_num} captured — {len(page_links)} link(s) found on page "
                             f"(landed on: {po_meta.get('url', '?')}, title: \"{po_meta.get('title', '?')}\", "
                             f"HTML size: {po_meta.get('contentLength', '?')} chars)",
                             {"status": "inventory"},
                         )
-                        preowned_years   = (po_capture.get("inventory_data") or {}).get("vehicle_years", [])
-                        # Collect expired dates from pre-owned SRP
+
+                        if page_num == 1:
+                            # First page only: this is the representative
+                            # pre-owned SRP used elsewhere (VDP fallback
+                            # search, screenshot, page-type classification) —
+                            # later pages only feed the aggregated
+                            # broken-link/image/expired-date findings below.
+                            vdp_search_links = page_links
+                            vdp_search_base  = display_url
+                            preowned_years   = (po_capture.get("inventory_data") or {}).get("vehicle_years", [])
+
+                            session.preowned_inventory_page_type = categorize_inventory_url(display_url)
+
+                            po_screenshot_b64 = po_capture.get("screenshot_base64")
+                            po_screenshot_path = None
+                            if po_screenshot_b64:
+                                po_screenshot_path = self._save_screenshot(
+                                    display_url, po_screenshot_b64, ViewportType.DESKTOP
+                                )
+                            po_title = (
+                                po_capture.get("metadata", {}).get("title")
+                                or po_capture.get("seo_data", {}).get("title")
+                                or "Pre-Owned Inventory"
+                            )
+                            session.preowned_inventory_screenshot = {
+                                "screenshot_path": po_screenshot_path,
+                                "screenshot_url": f"/screenshots/{Path(po_screenshot_path).name}" if po_screenshot_path else None,
+                                "url": display_url,
+                                "title": po_title,
+                            }
+                        else:
+                            preowned_years += (po_capture.get("inventory_data") or {}).get("vehicle_years", [])
+
+                        # Collect expired dates from this pre-owned SRP page
                         for date_entry in (po_capture.get("page_dates") or []):
                             session.inventory_expired_dates.append({
-                                **date_entry, "source_page": preowned_url, "page_kind": "srp_preowned",
+                                **date_entry, "source_page": display_url, "page_kind": "srp_preowned",
                             })
-
-                        # Surface the pre-owned SRP as its own section (screenshot +
-                        # broken link/image checks) — previously this page was only
-                        # visited to find a used VDP and its own results were discarded.
-                        session.preowned_inventory_page_type = categorize_inventory_url(preowned_url)
-
-                        po_screenshot_b64 = po_capture.get("screenshot_base64")
-                        po_screenshot_path = None
-                        if po_screenshot_b64:
-                            po_screenshot_path = self._save_screenshot(
-                                preowned_url, po_screenshot_b64, ViewportType.DESKTOP
-                            )
-                        po_title = (
-                            po_capture.get("metadata", {}).get("title")
-                            or po_capture.get("seo_data", {}).get("title")
-                            or "Pre-Owned Inventory"
-                        )
-                        session.preowned_inventory_screenshot = {
-                            "screenshot_path": po_screenshot_path,
-                            "screenshot_url": f"/screenshots/{Path(po_screenshot_path).name}" if po_screenshot_path else None,
-                            "url": preowned_url,
-                            "title": po_title,
-                        }
 
                         po_graphic_links = po_capture.get("inventory_graphic_links") or []
                         po_images        = po_capture.get("images", [])
                         po_img_resources = (po_capture.get("performance_data") or {}).get("imageResources", [])
 
                         po_broken_links, po_checked_links = await check_inventory_graphic_links(
-                            vdp_search_links, po_graphic_links, preowned_url
+                            page_links, po_graphic_links, display_url
                         )
                         po_broken_imgs, _po_over, _po_img_issues = await check_images(
-                            po_images, preowned_url, po_img_resources
+                            po_images, display_url, po_img_resources
                         )
-                        session.preowned_inventory_broken_links  = po_broken_links
-                        session.preowned_inventory_checked_links = po_checked_links
-                        session.preowned_inventory_broken_images = po_broken_imgs
-                except Exception as po_err:
-                    logger.warning(f"Pre-owned SRP navigation failed (non-fatal): {po_err}")
-                    await emit("progress", f"Pre-owned SRP navigation failed (non-fatal): {po_err}", {
-                        "status": "inventory",
-                    })
+                        session.preowned_inventory_broken_links  += po_broken_links
+                        session.preowned_inventory_checked_links += po_checked_links
+                        session.preowned_inventory_broken_images += po_broken_imgs
+                        session.preowned_inventory_pages_checked = page_num
+
+                        if page_num >= PREOWNED_SRP_MAX_PAGES:
+                            break
+
+                        # Prefer a real navigable "next page" URL when one
+                        # exists; fall back to click-based pagination (no URL
+                        # at all — common on AJAX-driven SRPs, see
+                        # getSrpPaginationInfo() in content-script.js).
+                        next_url = self._find_next_srp_page_url(page_links, display_url, visited_srp_pages)
+                        next_click_text = None
+                        if not next_url:
+                            srp_pagination = po_capture.get("srp_pagination") or {}
+                            next_click_text = self._find_next_srp_click_target(srp_pagination, page_num)
+
+                        if not next_url and not next_click_text:
+                            if page_num < PREOWNED_SRP_MIN_PAGES:
+                                await emit("progress",
+                                    f"Pre-owned SRP has no further pagination — stopped at page {page_num} "
+                                    f"(target was {PREOWNED_SRP_MIN_PAGES}-{PREOWNED_SRP_MAX_PAGES})",
+                                    {"status": "inventory"},
+                                )
+                            break
+                        page_url = next_url
+                        pending_click_text = None if next_url else next_click_text
+                    except Exception as po_err:
+                        logger.warning(f"Pre-owned SRP page {page_num} navigation failed (non-fatal): {po_err}")
+                        await emit("progress", f"Pre-owned SRP page {page_num} navigation failed (non-fatal): {po_err}", {
+                            "status": "inventory",
+                        })
+                        break
 
             await emit("progress", "Looking for top vehicle on inventory page...", {
                 "status": "inventory",
@@ -1101,17 +1274,23 @@ class AuditOrchestrator:
             remaining = HISTORY_REPORT_VEHICLE_TARGET - 1
             if remaining > 0:
                 # Two pools, searched separately because they carry different
-                # confidence about condition: vdp_search_links (only when it
-                # came from a confirmed pre-owned SRP — see needs_preowned_nav
-                # above) can be trusted by page context even when individual
-                # VDP URLs don't self-identify as used/CPO; inv_links (the
-                # primary/new SRP) can't, so those still need each URL to
-                # verify its own condition.
+                # confidence about condition: the pre-owned SRP pool (only
+                # when it came from a confirmed pre-owned SRP — see
+                # needs_preowned_nav above) can be trusted by page context
+                # even when individual VDP URLs don't self-identify as
+                # used/CPO; inv_links (the primary/new SRP) can't, so those
+                # still need each URL to verify its own condition.
                 candidates: list[tuple[str, str, bool]] = []
                 confirmed_preowned_pool = vdp_search_base != inventory_url
                 if confirmed_preowned_pool:
+                    # Use links from EVERY paginated pre-owned SRP page, not
+                    # just the first — a single page only lists ~10-20
+                    # vehicles, which was why "3-5 vehicles checked" often
+                    # landed on just 1 (page 1 alone didn't have enough
+                    # distinct candidate links to find any extras at all).
+                    po_pool = preowned_all_page_links or vdp_search_links
                     po_candidates = self._find_preowned_vehicle_links(
-                        vdp_search_links, vdp_search_base,
+                        po_pool, vdp_search_base,
                         exclude=visited_vdp_urls,
                         limit=HISTORY_REPORT_CANDIDATE_ATTEMPTS,
                         assume_preowned=True,
@@ -1683,8 +1862,24 @@ class AuditOrchestrator:
                         existing["name"] = bi_name
                     if not existing.get("address") and bi_addr:
                         existing["address"] = bi_addr
-                    if not existing.get("hours") and bi_hours:
-                        existing["hours"] = bi_hours
+                    # Merge per-day rather than replace-only-if-fully-empty —
+                    # confirmed real case: the homepage's only hours source
+                    # (malformed JSON-LD) parsed to an empty dict, and a
+                    # later page (e.g. Contact Us) had the complete, correct
+                    # 7-day DOM widget. An atomic "only set if existing is
+                    # currently empty" check is still correct for that case,
+                    # but it also means a homepage that resolves SOME days
+                    # (e.g. JSON-LD missing just Sunday) would permanently
+                    # block a later, more complete page from ever filling in
+                    # the gap — this fills in only the days not already known,
+                    # so the first genuine value for a given day always wins
+                    # but no page's partial result can block another page's
+                    # day it didn't have.
+                    if bi_hours:
+                        existing_hours = existing.get("hours") or {}
+                        for day, val in bi_hours.items():
+                            existing_hours.setdefault(day, val)
+                        existing["hours"] = existing_hours
 
             # Sprint 3: aggregate phone numbers (deduplicate by normalized 10-digit key)
             known_phones = {self._normalize_phone(p["number"]) for p in session.phone_numbers_all}

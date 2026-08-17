@@ -309,6 +309,7 @@ class AuditSession:
     preowned_inventory_broken_links: list = field(default_factory=list)
     preowned_inventory_checked_links: list = field(default_factory=list)
     preowned_inventory_broken_images: list = field(default_factory=list)
+    preowned_inventory_pages_checked: int = 0   # how many SRP pages were paginated through (min 3, max 5)
     srp_filter_zero_results: list = field(default_factory=list)   # filter combos with 0 results
     srp_filters_checked: int = 0                                  # number of filters tested
     srp_filter_type: str = "none"                                 # 'select' | 'url_params' | 'none'
@@ -398,6 +399,7 @@ class AuditSession:
             "preowned_inventory_broken_links": self.preowned_inventory_broken_links,
             "preowned_inventory_checked_links": self.preowned_inventory_checked_links,
             "preowned_inventory_broken_images": self.preowned_inventory_broken_images,
+            "preowned_inventory_pages_checked": self.preowned_inventory_pages_checked,
             "srp_filter_zero_results": self.srp_filter_zero_results,
             "srp_filters_checked": self.srp_filters_checked,
             "srp_filter_type": self.srp_filter_type,

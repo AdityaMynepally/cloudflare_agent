@@ -530,9 +530,20 @@ wsClient.onCommand(async (command) => {
       const data = await injectAndCapture(tabId);
       const screenshot = await captureScreenshot(tabId);
 
-      // Categorize links by page type
+      // Categorize links by page type. Derived from the LANDED page's own
+      // URL (data.metadata.url, i.e. window.location.href after the
+      // navigation actually settled) — not command.url, the originally
+      // requested one. A site that 301s bare-domain requests to "www."
+      // (confirmed: andymohrhyundai.com -> www.andymohrhyundai.com) means
+      // command.url's hostname ("andymohrhyundai.com") no longer matches
+      // ANY link on the page, since every href the browser resolved is
+      // against the post-redirect "www." origin — categorizeLinks' hostname
+      // filter then rejects every single link and returns zero categories,
+      // which is exactly what silently collapsed a crawl down to "found 1
+      // page" with no error anywhere in the pipeline to catch it.
       let baseDomain;
-      try { baseDomain = new URL(command.url).hostname; } catch { baseDomain = ''; }
+      try { baseDomain = new URL((data.metadata && data.metadata.url) || command.url).hostname; }
+      catch { baseDomain = ''; }
       const categorized = categorizeLinks(data.links || [], baseDomain);
 
       // Also collect all unique internal links, in natural document order —
@@ -548,17 +559,32 @@ wsClient.onCommand(async (command) => {
       // don't get truncated away in the first place.
       const INTERNAL_LINKS_CAP = 200;
       const internalLinks = [];
-      const seen = new Set();
+      const seenAt = new Map(); // pathname -> index into internalLinks
       for (const link of (data.links || [])) {
         try {
           const parsed = new URL(link.href);
-          if (parsed.hostname === baseDomain && !seen.has(parsed.pathname)) {
-            seen.add(parsed.pathname);
-            internalLinks.push({
-              href: link.href,
-              text: link.text,
-              pathname: parsed.pathname,
-            });
+          if (parsed.hostname !== baseDomain) continue;
+          const path = parsed.pathname;
+          const text = (link.text || '').trim();
+          if (!seenAt.has(path)) {
+            seenAt.set(path, internalLinks.length);
+            internalLinks.push({ href: link.href, text: link.text, pathname: path });
+          } else {
+            // Keep the MOST DESCRIPTIVE label for a given URL, not just the
+            // first one encountered — confirmed real case: a header
+            // icon-only "search" button with no visible text links to the
+            // same URL as the real "Pre-Owned Vehicles" nav item, and
+            // appears earlier in document order. Keeping only the first
+            // occurrence's (empty) text silently discarded the one label
+            // that actually named the page, starving downstream text-based
+            // matching like the pre-owned/inventory URL detection below,
+            // which then fell through to a much weaker, easily-misled
+            // loose URL-substring match instead.
+            const idx = seenAt.get(path);
+            const existingText = (internalLinks[idx].text || '').trim();
+            if (text.length > existingText.length) {
+              internalLinks[idx].text = link.text;
+            }
           }
         } catch {}
       }
@@ -1174,6 +1200,49 @@ wsClient.onCommand(async (command) => {
         screenshot_base64: screenshot.base64,
         screenshot_error: screenshot.error,
       }, command.req_id);
+    }
+
+    if (command.type === 'paginate_srp') {
+      // Click-based "next page" for SRP pagination that has no real
+      // navigable URL (see getSrpPaginationInfo() in content-script.js —
+      // confirmed on DealerOn-platform sites where numbered/Next pagination
+      // controls carry a dummy href="#" and the page change happens via a
+      // JS click handler + AJAX call). Stays on the CURRENT tab — no
+      // navigation — then re-runs the full page capture so the backend gets
+      // fresh links/images/inventory_data for whatever page loaded in.
+      const tabId = await getOrCreateAgentTab();
+      const clickResults = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: async (targetText) => {
+          function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+          const target = targetText.trim().toLowerCase();
+          const el = [...document.querySelectorAll('a, button, [role="button"]')].find((c) => {
+            const text = (c.textContent || '').trim().toLowerCase();
+            return text === target;
+          });
+          if (!el) return { clicked: false };
+          el.scrollIntoView({ block: 'center' });
+          el.click();
+          await sleep(2500);
+          return { clicked: true };
+        },
+        args: [command.clickText || ''],
+      });
+
+      const clickResult = clickResults[0]?.result || { clicked: false };
+      if (!clickResult.clicked) {
+        wsClient.sendCaptureResult({ error: 'pagination_element_not_found', clicked: false }, command.req_id);
+      } else {
+        await injectJsErrorCapture(tabId);
+        const data = await injectAndCapture(tabId);
+        const screenshot = await captureScreenshot(tabId);
+        wsClient.sendCaptureResult({
+          ...data,
+          screenshot_base64: screenshot.base64,
+          screenshot_error: screenshot.error,
+          clicked: true,
+        }, command.req_id);
+      }
     }
 
   } catch (err) {

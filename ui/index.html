@@ -429,6 +429,49 @@
     }
     .finding-items .ok-msg { color: var(--green); }
 
+    /* Oversized images grouped by source page */
+    #fc-oversized-list { max-height: 220px; }
+    .fc-oversized-group { border-bottom: 1px solid #222; padding: 2px 0; }
+    .fc-oversized-group:last-child { border-bottom: none; }
+    .fc-oversized-group summary {
+      font-size: 0.72rem;
+      color: #ccc;
+      cursor: pointer;
+      user-select: none;
+      list-style: none;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      padding: 2px 0;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .fc-oversized-group summary::-webkit-details-marker { display: none; }
+    .fc-oversized-group summary::before {
+      content: '▶';
+      font-size: 0.55rem;
+      color: #444;
+      flex-shrink: 0;
+      transition: transform .15s;
+    }
+    .fc-oversized-group[open] summary::before { transform: rotate(90deg); }
+    .fc-oversized-group summary:hover { color: #fff; }
+    .fc-oversized-group .fc-page-count { color: #888; font-weight: normal; flex-shrink: 0; }
+    .fc-oversized-group ul {
+      list-style: none;
+      padding-left: 15px;
+      margin: 2px 0 0;
+    }
+    .fc-oversized-group ul li {
+      padding: 2px 0;
+      border-bottom: 1px solid #1a1a1a;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .fc-oversized-group ul li:last-child { border-bottom: none; }
+
     .load-time-table {
       width: 100%;
       font-size: 0.72rem;
@@ -1523,9 +1566,39 @@
       `<li><span class="badge-status">${i.status_code || '?'}</span><a href="${escHtml(i.src || '')}" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:underline;text-decoration-color:#444">${escHtml(i.src || '')}</a> ${i.alt ? `<small style="color:#555">alt="${escHtml(i.alt)}"</small>` : ''}</li>`
     );
 
-    fillCard('fc-oversized', 'fc-oversized-count', 'fc-oversized-list', oi, i =>
-      `<li><span class="badge-size">${i.file_size_kb || '?'} KB</span><a href="${escHtml(i.src || '')}" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:underline;text-decoration-color:#444">${escHtml(i.src || '')}</a></li>`
-    );
+    // Oversized images: grouped by source page in a collapsible <details> per
+    // page, rather than one flat list — so the strategist can see which page
+    // to open without cross-referencing each image URL by hand.
+    (function renderOversizedImagesGrouped(items) {
+      const count = items.length;
+      const card    = document.getElementById('fc-oversized');
+      const countEl = document.getElementById('fc-oversized-count');
+      const listEl  = document.getElementById('fc-oversized-list');
+      card.className    = `finding-card ${count > 0 ? 'has-issues' : 'no-issues'}`;
+      countEl.className = `count ${count === 0 ? 'zero' : ''}`;
+      countEl.textContent = count;
+      if (!count) {
+        listEl.innerHTML = '<li class="ok-msg">None detected ✓</li>';
+        return;
+      }
+      const groups = new Map();
+      for (const item of items) {
+        const page = item.source_page || 'Unknown page';
+        if (!groups.has(page)) groups.set(page, []);
+        groups.get(page).push(item);
+      }
+      listEl.innerHTML = [...groups.entries()].map(([page, imgs]) => {
+        const imgItems = imgs.map(i =>
+          `<li><span class="badge-size">${i.file_size_kb || '?'} KB</span><a href="${escHtml(i.src || '')}" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:underline;text-decoration-color:#444">${escHtml(i.src || '')}</a></li>`
+        ).join('');
+        return `<li style="border-bottom:none;padding:0;white-space:normal;overflow:visible;">
+          <details class="fc-oversized-group">
+            <summary><a href="${escHtml(page)}" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:underline;text-decoration-color:#444" onclick="event.stopPropagation()">${escHtml(shortHost(page))}</a><span class="fc-page-count">(${imgs.length})</span></summary>
+            <ul>${imgItems}</ul>
+          </details>
+        </li>`;
+      }).join('');
+    })(oi);
 
     fillCard('fc-jserrors', 'fc-jserrors-count', 'fc-jserrors-list', je, e =>
       `<li><small style="color:#555"><a href="${escHtml(e.source_page || '')}" target="_blank" rel="noopener noreferrer" style="color:inherit">${escHtml(shortHost(e.source_page || ''))}</a> ${e.viewport ? '[' + e.viewport + ']' : ''}</small> ${escHtml(e.message || '')}</li>`
@@ -1568,13 +1641,28 @@
       { key: 'live_chat',          label: 'Live Chat Widget',       icon: '💬' },
     ];
 
+    // These 5 (all but live_chat, which is script/widget-detected, not
+    // link-based) are only counted as "detected" when reachable directly
+    // from the primary nav menu — a form that exists on the site but two
+    // clicks past the nav (e.g. Parts Center -> Order Parts) is real, just
+    // not one click away, so the not-found copy says that instead of
+    // reading like the form doesn't exist at all.
+    const NAV_SCOPED_KEYS = new Set(['contact_form', 'finance_form', 'trade_in_tool', 'service_scheduling', 'parts_form']);
+
     const grid = document.getElementById('features-grid');
     grid.innerHTML = FEATURE_META.map(m => {
       const f = df[m.key] || {};
       const found = !!f.detected;
+      // A department hub link (e.g. nav has "Parts Center", and the actual
+      // "Order Parts" action only lives on that hub page) — surfaced so
+      // "not in nav" comes with something a strategist can actually click
+      // through and verify, instead of a bare unlinked claim.
+      const hub = !found && f.nearby_nav_link;
       const detail = found
         ? (f.provider ? escHtml(f.provider) : escHtml((f.evidence || '').substring(0, 50)))
-        : 'Not detected';
+        : hub
+          ? `Not directly in nav — via "${escHtml(hub.text)}"`
+          : (NAV_SCOPED_KEYS.has(m.key) ? 'Not found in nav menu' : 'Not detected');
       const pill = `
         <div class="feature-pill ${found ? 'found' : 'missing'}">
           <span class="ficon">${m.icon}</span>
@@ -1583,8 +1671,9 @@
             <div class="fdetail">${detail}</div>
           </div>
         </div>`;
-      // Wrap in anchor linking to the source page if detected
-      const linkTarget = found && (f.feature_url || f.source_page);
+      // Wrap in anchor linking to the source page if detected, or to the
+      // department hub link as supporting evidence when not.
+      const linkTarget = (found && (f.feature_url || f.source_page)) || (hub && hub.href);
       return linkTarget
         ? `<a href="${escHtml(linkTarget)}" target="_blank" rel="noopener" style="text-decoration:none;display:block;cursor:pointer;">${pill}</a>`
         : pill;
@@ -1675,12 +1764,21 @@
     const irrelevant = carouselRel.filter(r => r.relevant === false);
     const undetermined = carouselRel.filter(r => r.relevant === null);
     if (carouselRel.length) {
-      const st = irrelevant.length ? 'warn' : 'pass';
+      // A clean "pass" implies relevance was actually checked — when most
+      // slides' topics couldn't be determined at all, that's not a
+      // confident pass, it's an inconclusive result, and reporting it as
+      // one green-checkmark "pass" (even with an honest count in the note)
+      // reads as "nothing to worry about" to a skimming strategist.
+      const mostlyUndetermined = !irrelevant.length && undetermined.length > 0 &&
+        undetermined.length / carouselRel.length >= 0.5;
+      const st = irrelevant.length ? 'warn' : mostlyUndetermined ? 'warn' : 'pass';
       const note = irrelevant.length
         ? `${irrelevant.length} slide(s) may link to unrelated pages`
-        : undetermined.length
-          ? `All identified slides look relevant (${undetermined.length} topic unclear)`
-          : 'All slide links appear topically relevant';
+        : mostlyUndetermined
+          ? `Could not confirm relevance for ${undetermined.length} of ${carouselRel.length} slides — manual review recommended`
+          : undetermined.length
+            ? `All identified slides look relevant (${undetermined.length} topic unclear)`
+            : 'All slide links appear topically relevant';
       const items = irrelevant.slice(0, 5).map(r =>
         `<li><span class="hpc-badge warn">mismatch</span>${escHtml((r.slide_text||'').substring(0,50))} → <small>${escHtml(truncUrl(r.href))}</small></li>`
       );

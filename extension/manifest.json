@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Web Audit Assistant",
-  "version": "2.0.8",
+  "version": "2.0.9",
   "description": "Browser extension for the Web Audit chatbot - captures page data for quality analysis",
   "permissions": [
     "activeTab",

@@ -477,7 +477,33 @@
       '.slide',
     ];
 
+    // Widgets that structurally look like a carousel/slider but aren't a
+    // promotional slide carousel in the sense this check cares about — a
+    // customer-review/testimonial slider's "topic" is prose about someone's
+    // buying experience, not a page reference, and a "shop by model"
+    // availability strip's items are inventory counts, not slides that
+    // should link to a matching topic page. Neither can be meaningfully
+    // scored for slide/URL topic relevance, and sweeping them in is exactly
+    // what inflated one real site's "topic unclear" count into the
+    // hundreds — confirmed live: eleven separate widgets (including two
+    // overlapping detections of the SAME hero carousel, a review slider,
+    // and a per-model inventory-count strip) were all being folded into one
+    // page's promotional slide set.
+    const EXCLUDED_CONTAINER_RE = /\b(reviews?|testimonials?|ratings?)\b/i;
+    function looksLikeInventoryCountStrip(slides) {
+      if (slides.length < 2) return false;
+      const countLike = slides.filter(s => /\b\d+\s+available\b/i.test(s.slide_text || '')).length;
+      return countLike / slides.length >= 0.5;
+    }
+
     const seen = new Set();
+    // Accepted carousel container elements, for containment-based dedup —
+    // separate from `seen`, which only catches the exact same element
+    // matching two different selector strings, not a DIFFERENT (parent or
+    // child) element that structurally wraps/is-wrapped-by one already
+    // accepted (e.g. an outer "[class*='carousel']" wrapper around an inner
+    // ".slick-list" — same visual carousel, two container matches).
+    const acceptedContainers = [];
     const carousels = [];
 
     for (const contSel of CAROUSEL_CONTAINERS) {
@@ -485,6 +511,23 @@
         for (const container of document.querySelectorAll(contSel)) {
           if (seen.has(container)) continue;
           seen.add(container);
+
+          if (acceptedContainers.some((acc) => acc === container || acc.contains(container) || container.contains(acc))) continue;
+
+          // The identifying class/id (e.g. "dv-reviews-carousel") commonly
+          // lives on an outer wrapper a couple of levels above the actual
+          // slide-list element matched here (confirmed live: a reviews
+          // widget's own ".swiper-wrapper" has a generic class with no
+          // "review" in it at all — only its grandparent does), so this has
+          // to walk up, not just check the matched element itself.
+          let excluded = false;
+          let node = container;
+          for (let hops = 0; node && hops < 5; hops++) {
+            const idc = ((node.id || '') + ' ' + (typeof node.className === 'string' ? node.className : '')).toLowerCase();
+            if (EXCLUDED_CONTAINER_RE.test(idc)) { excluded = true; break; }
+            node = node.parentElement;
+          }
+          if (excluded) continue;
 
           let slides = [];
           for (const slideSel of SLIDE_SELECTORS) {
@@ -523,8 +566,9 @@
             }
           }
 
-          if (slides.length >= 2) {
+          if (slides.length >= 2 && !looksLikeInventoryCountStrip(slides)) {
             carousels.push({ selector: contSel, slides: slides.slice(0, 20) });
+            acceptedContainers.push(container);
           }
         }
       } catch (_) {}
@@ -565,7 +609,17 @@
 
   // ---- Sprint 5: Primary Navigation Menu ----
 
-  function getNavMenuData() {
+  // Shared by getNavMenuData() and getPageFeatures() — locates the single
+  // element that is the site's real primary navigation, and returns its
+  // <a> elements. Lead-form detection needs this (not just link-health
+  // checking) so it can ask "is this feature reachable from the nav menu"
+  // rather than "does this keyword appear anywhere on any crawled page" —
+  // the latter previously produced both false negatives (a form that only
+  // exists two hops past the nav, e.g. Parts Center -> Order Parts, was
+  // reported as "not found") and misleading positives (finding it deep in
+  // the site doesn't tell a strategist it's missing from the nav, which is
+  // the actionable finding — these forms should all be one click away).
+  function findPrimaryNavContainer() {
     const NAV_SELECTORS = [
       'nav[role="navigation"]', '[role="navigation"]', 'nav',
       'header nav', '.main-nav', '.primary-nav', '.nav-menu',
@@ -631,29 +685,65 @@
     // item in the static DOM (just hidden via CSS until hover/focus), so a
     // plain query already captures everything without needing to simulate
     // hover interactions.
-    let bestRawLinks = [];
+    let bestContainer = null;
+    let bestLinks = [];
     let bestDistinctCount = 0;
     for (const el of candidates) {
       const links = [...el.querySelectorAll('a[href]')].filter(a => isRealNavHref(a.href, a.getAttribute('href')));
       const distinctCount = new Set(links.map(a => a.href)).size;
       if (distinctCount > bestDistinctCount) {
         bestDistinctCount = distinctCount;
-        bestRawLinks = links;
+        bestLinks = links;
+        bestContainer = el;
       }
     }
+    return { container: bestContainer, links: bestLinks };
+  }
 
-    const hrefCounts = {};
+  function getNavMenuData() {
+    const { container, links: bestRawLinks } = findPrimaryNavContainer();
+
+    // A real duplicate is the same URL reachable from TWO OR MORE distinct
+    // top-level menu branches (e.g. both "New Vehicles" AND "Specials"
+    // happen to link to the same page) — genuinely confusing/redundant
+    // navigation. Dealer mega-menus commonly organize the SAME catalog into
+    // multiple simultaneous facets within ONE top-level dropdown instead
+    // (e.g. a "New Vehicles" panel with both a by-body-style column and a
+    // by-fuel-type column, each independently linking to every model) —
+    // confirmed on a real site: that alone accounted for ~80 of 128 nav
+    // links being wrongly flagged, none of which were an authoring mistake,
+    // just one model cross-listed under two facets of the SAME dropdown.
+    // Grouping by top-level branch before counting means that no longer
+    // counts as a duplicate — only a URL appearing under separate top-level
+    // items still does.
+    function topLevelBranch(anchor) {
+      let topLi = null;
+      let node = anchor.parentElement;
+      while (node && node !== container) {
+        if (node.tagName === 'LI') topLi = node;
+        node = node.parentElement;
+      }
+      return topLi || container;
+    }
+
+    const hrefBranches = new Map();
+    for (const link of bestRawLinks) {
+      const href = link.href;
+      if (!hrefBranches.has(href)) hrefBranches.set(href, new Set());
+      hrefBranches.get(href).add(topLevelBranch(link));
+    }
+
+    const seenHrefs = new Set();
     const allLinks = [];
     for (const link of bestRawLinks) {
       const href = link.href;
+      if (seenHrefs.has(href)) continue;
+      seenHrefs.add(href);
       const text = (link.getAttribute('aria-label') || link.textContent || '').trim().substring(0, 100);
-      hrefCounts[href] = (hrefCounts[href] || 0) + 1;
-      if (hrefCounts[href] === 1) {
-        allLinks.push({ href, text });
-      } else {
-        const existing = allLinks.find(l => l.href === href);
-        if (existing) existing.occurrences = (existing.occurrences || 1) + 1;
-      }
+      const entry = { href, text };
+      const branchCount = hrefBranches.get(href).size;
+      if (branchCount > 1) entry.occurrences = branchCount;
+      allLinks.push(entry);
     }
     return allLinks.slice(0, 80);
   }
@@ -662,32 +752,52 @@
 
   function getHeaderLogoInfo() {
     const result = { has_link: false, href: null, links_to_homepage: false };
-    const LOGO_SELECTORS = [
-      'header a[class*="logo"]', 'header [class*="logo"] a', 'header .logo a',
-      '#header a[class*="logo"]', '.header a[class*="logo"]',
-      'a[class*="logo"]', '.navbar-brand', '[class*="navbar-brand"] a',
-      '[class*="brand"] a', 'header a[href="/"]', 'a[href="/"] img',
-      '.site-logo a', '#logo a', 'header img[class*="logo"]',
+
+    // Tier 1: specific, low-ambiguity signals — either the anchor itself is
+    // literally the homepage link, or it matches a narrow/well-known logo
+    // pattern. Tried first and preferred whenever any of them match.
+    const LOGO_SELECTORS_STRONG = [
+      'header a[href="/"]',
+      '.site-logo a', '#logo a', '.navbar-brand', '[class*="navbar-brand"] a',
+      'header a[class*="logo"]', '#header a[class*="logo"]', '.header a[class*="logo"]',
+      'header img[class*="logo"]', 'a[href="/"] img',
+    ];
+    // Tier 2: broader, higher-risk fallbacks — only tried if nothing above
+    // matched. "header [class*='logo'] a" matches ANY anchor nested inside
+    // ANY container that happens to have "logo" in its class, which on real
+    // sites has matched unrelated third-party widget badges (a manufacturer
+    // "Car Care" promo, a trade-in-tool badge) sitting in a logo-classed
+    // wrapper alongside the real logo — confirmed on two separate sites,
+    // both times stealing the match before the real (Tier 1) homepage link
+    // was ever reached. Fully unscoped selectors are riskier still.
+    const LOGO_SELECTORS_FALLBACK = [
+      'header [class*="logo"] a', 'header .logo a',
+      'a[class*="logo"]', '[class*="brand"] a',
     ];
 
     const origin = window.location.origin;
 
-    for (const sel of LOGO_SELECTORS) {
+    function tryFind(selectors) {
+      for (const sel of selectors) {
+        try {
+          const el = document.querySelector(sel);
+          if (!el) continue;
+          const anchor = el.tagName === 'A' ? el : (el.closest('a') || el.querySelector('a'));
+          if (anchor && anchor.href) return anchor.href;
+        } catch (_) {}
+      }
+      return null;
+    }
+
+    const href = tryFind(LOGO_SELECTORS_STRONG) || tryFind(LOGO_SELECTORS_FALLBACK);
+    if (href) {
+      result.has_link = true;
+      result.href = href;
       try {
-        const el = document.querySelector(sel);
-        if (!el) continue;
-        const anchor = el.tagName === 'A' ? el : (el.closest('a') || el.querySelector('a'));
-        if (anchor && anchor.href) {
-          result.has_link = true;
-          result.href = anchor.href;
-          try {
-            const u = new URL(result.href);
-            const path = u.pathname.replace(/\/$/, '') || '/';
-            result.links_to_homepage = u.origin === origin && (path === '/' || path === '');
-          } catch {}
-          return result;
-        }
-      } catch (_) {}
+        const u = new URL(href);
+        const path = u.pathname.replace(/\/$/, '') || '/';
+        result.links_to_homepage = u.origin === origin && (path === '/' || path === '');
+      } catch {}
     }
     return result;
   }
@@ -858,7 +968,19 @@
     function parseOpeningHours(item) {
       const hours = {};
       if (item.openingHoursSpecification) {
-        for (const spec of [].concat(item.openingHoursSpecification)) {
+        // Confirmed on a real dealer site: openingHoursSpecification wrapped
+        // in an extra, non-compliant outer array — [[{...}, {...}]] instead
+        // of [{...}, {...}]. A single concat() doesn't undo that extra
+        // level, so `spec` below silently ended up being the whole inner
+        // array rather than one spec object, spec.dayOfWeek was always
+        // undefined, and EVERY day was dropped with no error — schema
+        // showed real hours but this parser returned zero. flatMap here
+        // un-wraps one extra level of array-of-arrays defensively so a
+        // well-formed flat array of specs is unaffected either way.
+        const specs = [].concat(item.openingHoursSpecification)
+          .flatMap((s) => Array.isArray(s) ? s : [s]);
+        for (const spec of specs) {
+          if (!spec || typeof spec !== 'object') continue;
           for (const raw of [].concat(spec.dayOfWeek || [])) {
             const day = raw.replace(/https?:\/\/schema\.org\//i, '');
             if (!day) continue;
@@ -1406,8 +1528,17 @@
     try {
       const scriptSrcs  = Array.from(document.querySelectorAll('script[src]')).map(s => (s.src || '').toLowerCase());
       const iframeSrcs  = Array.from(document.querySelectorAll('iframe')).map(f => (f.src || f.getAttribute('src') || '').toLowerCase());
-      const allLinks    = Array.from(document.querySelectorAll('a[href]'));
       const allForms    = Array.from(document.querySelectorAll('form'));
+
+      // Lead-form links (trade-in, service, finance, contact, parts) are only
+      // considered "detected" via the primary nav menu — not via any link
+      // found anywhere on any crawled page. These are exactly the forms a
+      // dealership should have one click away from every page, so scoping
+      // here directly encodes that expectation: a form that only exists two
+      // clicks deep (e.g. Parts Center -> Order Parts) is accurately reported
+      // as not in the nav, instead of a false "not found" (it does exist) or
+      // a misleading "found" (it isn't where a visitor would expect it).
+      const { container: navContainer, links: navAnchors } = findPrimaryNavContainer();
 
       // Returns true only if the link points to a real page, not homepage / anchor / empty
       function isRealLink(a) {
@@ -1432,9 +1563,13 @@
       // isRealLink() correctly excludes these from feature_url-based detection
       // (there's nowhere to navigate), but we still want to flag the feature as
       // present and remember its visible text so the backend can click it in
-      // place and screenshot whatever modal appears.
+      // place and screenshot whatever modal appears. Scoped to the nav
+      // container (falling back to the whole document only if no nav
+      // container was found at all) for the same nav-menu-only reasoning
+      // as the link-based checks above.
       function findModalTrigger(textKeywords) {
-        const candidates = Array.from(document.querySelectorAll('a[href], button, [role="button"]'));
+        const root = navContainer || document;
+        const candidates = Array.from(root.querySelectorAll('a[href], button, [role="button"]'));
         for (const el of candidates) {
           const href = (el.href || '').trim();
           const isNavigable = href && !href.startsWith('javascript:') && href !== '#';
@@ -1517,7 +1652,7 @@
           'trade-in', 'value-your-trade', 'value-my-trade', 'value-your-vehicle',
           'instant-cash-offer', 'sell-my-car', 'trade-value',
         ];
-        const tradeLink = allLinks.find(a => {
+        const tradeLink = navAnchors.find(a => {
           if (!isRealLink(a)) return false;
           const text = a.textContent.toLowerCase();
           const href = (a.href || '').toLowerCase();
@@ -1561,7 +1696,7 @@
           'schedule-service', 'book-service', 'service-appointment',
           'service-appt', 'schedule-appointment',
         ];
-        const svcLink = allLinks.find(a => {
+        const svcLink = navAnchors.find(a => {
           if (!isRealLink(a)) return false;
           const text = a.textContent.toLowerCase();
           const href = (a.href || '').toLowerCase();
@@ -1584,6 +1719,27 @@
               evidence: svcTrigger.textContent.trim().replace(/\s+/g, ' ').substring(0, 80),
               modal_trigger_text: svcTrigger.textContent.trim().replace(/\s+/g, ' ').substring(0, 80),
             };
+          } else {
+            // Not directly in nav, but many dealer sites route through a
+            // department hub page instead (nav has "Service Center", the
+            // actual "Schedule Service" action lives one click further in)
+            // — confirmed real case for the equivalent parts flow below.
+            // Surface that hub link as supporting evidence rather than
+            // leaving a bare "not found" with nothing for a strategist to
+            // click through and verify.
+            const svcHub = navAnchors.find((a) => {
+              if (!isRealLink(a)) return false;
+              const text = a.textContent.toLowerCase().trim();
+              const href = (a.href || '').toLowerCase();
+              return ['service center', 'service department', 'service & parts'].some((k) => text.includes(k)) ||
+                     /\/service(-center|-department)?(\.html)?\/?$/.test(new URL(a.href).pathname.toLowerCase());
+            });
+            if (svcHub) {
+              features.service_scheduling.nearby_nav_link = {
+                href: svcHub.href,
+                text: svcHub.textContent.trim().substring(0, 80),
+              };
+            }
           }
         }
       }
@@ -1598,7 +1754,7 @@
         'apply-for-financing', 'apply-for-credit', 'finance-application', 'finance-app',
         'credit-application', 'credit-app', 'apply-now', 'get-pre-approved', 'pre-approval',
       ];
-      const financeLink = allLinks.find(a => {
+      const financeLink = navAnchors.find(a => {
         if (!isRealLink(a)) return false;
         const text = a.textContent.toLowerCase();
         const href = (a.href || '').toLowerCase();
@@ -1622,7 +1778,7 @@
 
       // ---- 5. Contact / General Inquiry Form Detection ----
       const CONTACT_LINK_KEYWORDS = ['contact us', 'get in touch', 'reach us', 'send us a message', 'contact our', 'contact the'];
-      const contactLink = allLinks.find(a => {
+      const contactLink = navAnchors.find(a => {
         if (!isRealLink(a)) return false;
         const text = a.textContent.toLowerCase();
         const href = (a.href || '').toLowerCase();
@@ -1655,7 +1811,7 @@
       const PARTS_HREF_KEYWORDS = [
         'order-parts', 'parts-request', 'parts-order', 'parts-inquiry', 'parts-department',
       ];
-      const partsLink = allLinks.find(a => {
+      const partsLink = navAnchors.find(a => {
         if (!isRealLink(a)) return false;
         const text = a.textContent.toLowerCase();
         const href = (a.href || '').toLowerCase();
@@ -1680,6 +1836,26 @@
             evidence: partsTrigger.textContent.trim().replace(/\s+/g, ' ').substring(0, 80),
             modal_trigger_text: partsTrigger.textContent.trim().replace(/\s+/g, ' ').substring(0, 80),
           };
+        } else {
+          // Not directly in nav, but many dealer sites route through a
+          // "Parts Center" department hub instead — confirmed real case:
+          // nav has "Parts Center", and "Order Parts" only appears as a
+          // link/button ON that hub page. Surface the hub link as
+          // supporting evidence rather than leaving a bare "not found"
+          // with nothing for a strategist to click through and verify.
+          const partsHub = navAnchors.find((a) => {
+            if (!isRealLink(a)) return false;
+            const text = a.textContent.toLowerCase().trim();
+            const href = (a.href || '').toLowerCase();
+            return ['parts center', 'parts department', 'parts & accessories', 'parts and accessories'].some((k) => text.includes(k)) ||
+                   /\/parts(-center|-department)?(\.html)?\/?$/.test(new URL(a.href).pathname.toLowerCase());
+          });
+          if (partsHub) {
+            features.parts_form.nearby_nav_link = {
+              href: partsHub.href,
+              text: partsHub.textContent.trim().substring(0, 80),
+            };
+          }
         }
       }
 
@@ -1688,6 +1864,55 @@
     }
 
     return features;
+  }
+
+  // ---- Sprint 8: SRP pagination detection ----
+
+  // Many dealer inventory platforms (confirmed on multiple DealerOn sites)
+  // render numbered pagination / "Next" as real elements but with a dummy
+  // href ("#") — the actual page change happens via a JS click handler and
+  // an AJAX call, with no distinct navigable URL at all. That means "next
+  // page" for the used/pre-owned SRP can't always be found by looking for a
+  // real link (see _find_preowned_url-style href scanning in orchestrator.py)
+  // — this surfaces click-only pagination candidates by visible text so the
+  // backend can drive a click-based "next page" (paginate_srp WS command)
+  // when no real href exists.
+  function getSrpPaginationInfo() {
+    const NEXT_TEXT = new Set(['next', 'next page', 'next >', 'next »', '>', '»']);
+    const candidates = Array.from(document.querySelectorAll('a, button, [role="button"]'));
+    let currentPage = null;
+    const numberedPages = [];
+    let nextClickable = false;
+
+    function isPlaceholderHref(el) {
+      if (el.tagName !== 'A') return true; // buttons/[role=button] are never real links
+      const raw = (el.getAttribute('href') || '').trim();
+      return !raw || raw === '#' || raw.toLowerCase().startsWith('javascript:');
+    }
+
+    for (const el of candidates) {
+      const text = (el.textContent || '').trim().toLowerCase();
+      if (!text || text.length > 12) continue;
+      const placeholder = isPlaceholderHref(el);
+
+      if (/^\d+$/.test(text)) {
+        const page = parseInt(text, 10);
+        const isCurrent = el.getAttribute('aria-current') === 'page' ||
+          /\b(active|current|selected)\b/i.test(el.className || '');
+        if (isCurrent) currentPage = page;
+        const existing = numberedPages.find((p) => p.page === page);
+        if (!existing) {
+          numberedPages.push({ page, clickable: placeholder });
+        } else if (placeholder) {
+          existing.clickable = true;
+        }
+      } else if (NEXT_TEXT.has(text) && placeholder) {
+        nextClickable = true;
+      }
+    }
+
+    numberedPages.sort((a, b) => a.page - b.page);
+    return { current_page: currentPage, numbered_pages: numberedPages, next_clickable: nextClickable };
   }
 
   // ---- Main: gather all data ----
@@ -1722,6 +1947,8 @@
       // Sprint 6 — inventory checks
       inventory_graphic_links: getInventoryGraphicLinks(),
       inventory_data: getInventoryData(),
+      // Sprint 8 — SRP pagination (click-only "next page" detection)
+      srp_pagination: getSrpPaginationInfo(),
       timestamp: new Date().toISOString()
     };
 

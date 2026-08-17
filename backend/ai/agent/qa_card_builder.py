@@ -153,11 +153,20 @@ def _evaluate_check(
     elif check_id == "hp_slides_linked":
         # Sprint 5: relevance check
         if session:
-            irrelevant = [r for r in session.carousel_link_relevance if r.get("relevant") is False]
+            rel = session.carousel_link_relevance
+            irrelevant = [r for r in rel if r.get("relevant") is False]
+            undetermined = [r for r in rel if r.get("relevant") is None]
             if irrelevant:
                 d_status = CheckStatus.FAIL
                 notes = f"{len(irrelevant)} slide link(s) may point to incorrect pages"
-            elif session.carousel_link_relevance:
+            elif rel and undetermined and len(undetermined) / len(rel) >= 0.5:
+                # Most slides' topics couldn't be determined at all — that's
+                # an inconclusive result, not a verified pass; NA reflects
+                # "not confidently checked" instead of implying a clean bill
+                # of health nothing was actually confirmed to earn.
+                d_status = CheckStatus.NA
+                notes = f"Could not confirm relevance for {len(undetermined)} of {len(rel)} slides — manual review recommended"
+            elif rel:
                 d_status = CheckStatus.PASS
         else:
             d_status = CheckStatus.PASS if desktop_results else CheckStatus.NA
@@ -309,8 +318,33 @@ def _evaluate_check(
         m_status = CheckStatus.PASS if has_forms_m else CheckStatus.NA
 
     elif check_id in ("lf_finance_app", "lf_trade_in", "lf_service_scheduler", "lf_order_parts", "lf_chat_tool"):
-        d_status = CheckStatus.PASS if desktop_results else CheckStatus.NA
-        m_status = CheckStatus.PASS if mobile_results else CheckStatus.NA
+        # These are only considered present when reachable from the primary
+        # nav menu (see getPageFeatures() in content-script.js) — a form that
+        # exists on the site but two clicks past the nav (e.g. Parts Center ->
+        # Order Parts) is accurately reported as missing from nav, not as
+        # "doesn't exist", since every one of these should be one click away.
+        feature_key = {
+            "lf_finance_app": "finance_form",
+            "lf_trade_in": "trade_in_tool",
+            "lf_service_scheduler": "service_scheduling",
+            "lf_order_parts": "parts_form",
+            "lf_chat_tool": "live_chat",
+        }[check_id]
+        feature = session.dealership_features.get(feature_key, {}) if session else {}
+        if feature.get("detected"):
+            d_status = CheckStatus.PASS if desktop_results else CheckStatus.NA
+            m_status = CheckStatus.PASS if mobile_results else CheckStatus.NA
+        elif session is not None:
+            d_status = CheckStatus.FAIL if desktop_results else CheckStatus.NA
+            m_status = CheckStatus.FAIL if mobile_results else CheckStatus.NA
+            hub = feature.get("nearby_nav_link") or {}
+            notes = (
+                f'Not found in the primary nav menu — reachable via "{hub.get("text", "")}" ({hub.get("href", "")})'
+                if hub.get("href") else "Not found in the primary nav menu"
+            )
+        else:
+            d_status = CheckStatus.PASS if desktop_results else CheckStatus.NA
+            m_status = CheckStatus.PASS if mobile_results else CheckStatus.NA
 
     elif check_id == "lf_no_expired":
         d_status = CheckStatus.PASS if desktop_results else CheckStatus.NA
