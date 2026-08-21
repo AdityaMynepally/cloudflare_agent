@@ -259,6 +259,58 @@ async function attachDebugger(tabId) {
   }
 }
 
+async function keepTabActive(tabId) {
+  // Chrome throttles/pauses JS timers, rAF, and IntersectionObserver
+  // callbacks in a backgrounded (unfocused/occluded) tab — and the agent's
+  // dedicated window is deliberately created unfocused (see
+  // getOrCreateAgentTab) so audits don't disrupt whoever's using the
+  // computer. Previously "active" was only set inside captureScreenshot(),
+  // which runs AFTER injectAndCapture() already scraped the DOM — too late
+  // to help anything time-sensitive earlier in the capture. Calling this
+  // before the wait/scrape means the page's own JS runs at normal speed
+  // for everything downstream, not just the screenshot.
+  try {
+    await attachDebugger(tabId);
+    await sendDebuggerCommand(tabId, 'Page.enable');
+    await sendDebuggerCommand(tabId, 'Page.setWebLifecycleState', { state: 'active' });
+  } catch (err) {
+    console.warn('[KeepActive] setWebLifecycleState failed (continuing anyway):', err.message);
+  }
+}
+
+async function scrollToLoadContent(tabId, steps = 6, stepWaitMs = 900) {
+  // Some inventory SRPs (confirmed live: LaFontaine Chevrolet's used-vehicle
+  // search, a CarBravo-style widget reporting 949 vehicles) render as a
+  // virtualized/infinite-scroll list — only ONE card exists in the DOM at
+  // load, regardless of how long you wait in place (tested: stuck at 1
+  // card after a clean, uninterrupted 10s wait, and even 20s of polling).
+  // What actually works, confirmed live: scrolling through the page in
+  // INCREMENTAL steps (not one jump to the bottom) — card count grew
+  // 1 -> 2 -> 3 -> 4 -> 5 across 6 successive partial scrolls, ~900ms
+  // apart. A single big jump doesn't reliably trigger the same
+  // intersection-based loading as passing through each threshold in turn.
+  // Scrolls back to the top afterward so the screenshot isn't mid-page.
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      func: async (steps, stepWaitMs) => {
+        function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+        for (let i = 1; i <= steps; i++) {
+          const target = Math.round((document.body.scrollHeight / steps) * i);
+          window.scrollTo(0, target);
+          window.dispatchEvent(new Event('scroll'));
+          await sleep(stepWaitMs);
+        }
+        window.scrollTo(0, 0);
+        await sleep(300);
+      },
+      args: [steps, stepWaitMs],
+    });
+  } catch (err) {
+    console.warn('[ScrollLoad] failed (continuing anyway):', err.message);
+  }
+}
+
 async function sendDebuggerCommand(tabId, method, params = {}) {
   return new Promise((resolve, reject) => {
     chrome.debugger.sendCommand({ tabId }, method, params, (result) => {
@@ -502,8 +554,14 @@ wsClient.onCommand(async (command) => {
 
       await navigateTab(tabId, command.url);
       await waitForTabLoad(tabId);
+      await keepTabActive(tabId);
       await injectJsErrorCapture(tabId);
       await sleep(2000);
+      // Only for pages the backend already knows are inventory/SRP-type —
+      // the extra ~5-6s cost isn't worth paying on every single page.
+      if (command.scrollToLoad) {
+        await scrollToLoadContent(tabId);
+      }
       const data = await injectAndCapture(tabId);
       const screenshot = await captureScreenshot(tabId);
 
@@ -526,6 +584,7 @@ wsClient.onCommand(async (command) => {
       const tabId = await getOrCreateAgentTab();
       await navigateTab(tabId, command.url);
       await waitForTabLoad(tabId);
+      await keepTabActive(tabId);
       await sleep(2000);
       const data = await injectAndCapture(tabId);
       const screenshot = await captureScreenshot(tabId);
@@ -1211,6 +1270,7 @@ wsClient.onCommand(async (command) => {
       // navigation — then re-runs the full page capture so the backend gets
       // fresh links/images/inventory_data for whatever page loaded in.
       const tabId = await getOrCreateAgentTab();
+      await keepTabActive(tabId);
       const clickResults = await chrome.scripting.executeScript({
         target: { tabId },
         func: async (targetText) => {
@@ -1234,6 +1294,9 @@ wsClient.onCommand(async (command) => {
         wsClient.sendCaptureResult({ error: 'pagination_element_not_found', clicked: false }, command.req_id);
       } else {
         await injectJsErrorCapture(tabId);
+        // paginate_srp only ever runs against an SRP, so always worth the
+        // scroll pass — same virtualized-list rendering as the initial page.
+        await scrollToLoadContent(tabId);
         const data = await injectAndCapture(tabId);
         const screenshot = await captureScreenshot(tabId);
         wsClient.sendCaptureResult({

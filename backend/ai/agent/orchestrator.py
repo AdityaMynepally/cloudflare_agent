@@ -890,6 +890,7 @@ class AuditOrchestrator:
                 inv_capture = await bridge.send_with_retry({
                     "type": "audit_page",
                     "url": inventory_url,
+                    "scrollToLoad": True,
                 })
             except HealingError as e:
                 logger.warning(f"Inventory page navigation failed: {e}")
@@ -1039,6 +1040,7 @@ class AuditOrchestrator:
                             po_capture = await bridge.send_with_retry({
                                 "type": "audit_page",
                                 "url": page_url,
+                                "scrollToLoad": True,
                             })
                         await emit("progress",
                             f"[diag] pre-owned SRP page {page_num} raw response — keys: {sorted(po_capture.keys())}, "

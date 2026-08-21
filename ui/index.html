@@ -404,9 +404,8 @@
     .finding-items li {
       border-bottom: 1px solid #222;
       padding: 2px 0;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
+      white-space: normal;
+      overflow-wrap: anywhere;
     }
     .finding-items li:last-child { border-bottom: none; }
     .finding-items .badge-status {
@@ -466,9 +465,8 @@
     .fc-oversized-group ul li {
       padding: 2px 0;
       border-bottom: 1px solid #1a1a1a;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
+      white-space: normal;
+      overflow-wrap: anywhere;
     }
     .fc-oversized-group ul li:last-child { border-bottom: none; }
 
@@ -712,9 +710,8 @@
       color: #aaa;
       border-bottom: 1px solid #1d1d1d;
       padding: 2px 0;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
+      white-space: normal;
+      overflow-wrap: anywhere;
       line-height: 1.5;
     }
     .hpc-items li:last-child { border-bottom: none; }
@@ -865,9 +862,8 @@
       color: #aaa;
       border-bottom: 1px solid #1d1d1d;
       padding: 2px 0;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
+      white-space: normal;
+      overflow-wrap: anywhere;
       line-height: 1.5;
     }
     .inv-items li:last-child { border-bottom: none; }
@@ -1857,7 +1853,7 @@
     // Req 7: Expired dates
     if (navExpired.length) {
       const items = navExpired.slice(0, 5).map(d =>
-        `<li><span class="hpc-badge err">expired</span><b>${escHtml(d.date_str)}</b> — ${escHtml((d.context||'').substring(0,55))} <small style="color:#555">(${escHtml(shortHost(d.source_page||''))})</small></li>`
+        `<li><span class="hpc-badge err">expired</span><b>${escHtml(d.date_str)}</b> — ${escHtml((d.context||'').substring(0,55))} <small style="color:#555">(<a href="${escHtml(d.source_page||'')}" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:underline;text-decoration-color:#444">${escHtml(shortHost(d.source_page||''))}</a>)</small></li>`
       );
       html += card('fail', 'Expired Content on Pages',
         `${navExpired.length} expired date(s) found across audited pages`, itemList(items));
@@ -2182,7 +2178,10 @@
       const vdpExpiredD = invExpired.filter(d => d.page_kind === 'vdp');
       const items = invExpired.slice(0, 5).map(d => {
         const badge = d.page_kind === 'vdp' ? '<span class="inv-badge info">VDP</span>' : '<span class="inv-badge warn">SRP</span>';
-        return `<li>${badge}<b>${escHtml(d.date_str)}</b> — ${escHtml((d.context || '').substring(0, 55))}</li>`;
+        const link = d.source_page
+          ? ` <small style="color:#555">(<a href="${escHtml(d.source_page)}" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:underline;text-decoration-color:#444">${escHtml(shortHost(d.source_page))}</a>)</small>`
+          : '';
+        return `<li>${badge}<b>${escHtml(d.date_str)}</b> — ${escHtml((d.context || '').substring(0, 55))}${link}</li>`;
       });
       html += invCard('fail', 'Expired Content', `${invExpired.length} expired date(s) found on inventory pages`, invItemList(items));
     } else if (invCheckedLinks.length || histCheck) {
