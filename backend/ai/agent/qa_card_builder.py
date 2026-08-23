@@ -318,11 +318,12 @@ def _evaluate_check(
         m_status = CheckStatus.PASS if has_forms_m else CheckStatus.NA
 
     elif check_id in ("lf_finance_app", "lf_trade_in", "lf_service_scheduler", "lf_order_parts", "lf_chat_tool"):
-        # These are only considered present when reachable from the primary
-        # nav menu (see getPageFeatures() in content-script.js) — a form that
-        # exists on the site but two clicks past the nav (e.g. Parts Center ->
-        # Order Parts) is accurately reported as missing from nav, not as
-        # "doesn't exist", since every one of these should be one click away.
+        # A form reachable via a department hub page (e.g. nav has "Parts
+        # Center", and "Order Parts" only lives on that hub page — see
+        # getPageFeatures() in content-script.js) genuinely exists on the
+        # site, so it's a pass, not a fail — the nav-menu gap (should be one
+        # click away, isn't) is real too, so it's surfaced as a disclaimer
+        # in the notes rather than dropped or treated as "doesn't exist".
         feature_key = {
             "lf_finance_app": "finance_form",
             "lf_trade_in": "trade_in_tool",
@@ -331,17 +332,18 @@ def _evaluate_check(
             "lf_chat_tool": "live_chat",
         }[check_id]
         feature = session.dealership_features.get(feature_key, {}) if session else {}
+        hub = feature.get("nearby_nav_link") or {}
         if feature.get("detected"):
             d_status = CheckStatus.PASS if desktop_results else CheckStatus.NA
             m_status = CheckStatus.PASS if mobile_results else CheckStatus.NA
+        elif hub.get("href") and session is not None:
+            d_status = CheckStatus.PASS if desktop_results else CheckStatus.NA
+            m_status = CheckStatus.PASS if mobile_results else CheckStatus.NA
+            notes = f'Present via "{hub.get("text", "")}" ({hub.get("href", "")}) — not directly in the primary nav menu'
         elif session is not None:
             d_status = CheckStatus.FAIL if desktop_results else CheckStatus.NA
             m_status = CheckStatus.FAIL if mobile_results else CheckStatus.NA
-            hub = feature.get("nearby_nav_link") or {}
-            notes = (
-                f'Not found in the primary nav menu — reachable via "{hub.get("text", "")}" ({hub.get("href", "")})'
-                if hub.get("href") else "Not found in the primary nav menu"
-            )
+            notes = "Not found in the primary nav menu"
         else:
             d_status = CheckStatus.PASS if desktop_results else CheckStatus.NA
             m_status = CheckStatus.PASS if mobile_results else CheckStatus.NA

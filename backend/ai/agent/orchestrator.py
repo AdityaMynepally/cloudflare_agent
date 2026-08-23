@@ -1929,14 +1929,25 @@ class AuditOrchestrator:
         """
         for feature_key in ("contact_form", "finance_form", "trade_in_tool",
                              "service_scheduling", "parts_form", "live_chat"):
-            detected_in_session = session.dealership_features.get(feature_key, {})
-            if detected_in_session.get("detected"):
-                continue  # already found on a prior page
+            existing = session.dealership_features.get(feature_key, {})
+            if existing.get("detected"):
+                continue  # already found directly on a prior page
 
             page_signal = page_features.get(feature_key, {})
             if page_signal.get("detected"):
-                updated = {**page_signal, "source_page": page_url}
-                session.dealership_features[feature_key] = updated
+                session.dealership_features[feature_key] = {**page_signal, "source_page": page_url}
+            elif page_signal.get("nearby_nav_link") and not existing.get("nearby_nav_link"):
+                # Not directly detected on this page, but a department-hub
+                # link (e.g. "Parts Center") was found on it — this was
+                # previously dropped entirely by the `if detected` guard
+                # above, so the "present via X, not directly in nav"
+                # disclaimer had nothing to point to even though the
+                # content script found it correctly on every page.
+                session.dealership_features[feature_key] = {
+                    **existing,
+                    "nearby_nav_link": page_signal["nearby_nav_link"],
+                    "source_page": page_url,
+                }
 
     def _save_screenshot(self, url: str, b64_data: str, viewport: ViewportType = ViewportType.DESKTOP) -> Optional[str]:
         """Decode and save a base64 screenshot with viewport suffix."""

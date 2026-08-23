@@ -1648,16 +1648,19 @@
     const grid = document.getElementById('features-grid');
     grid.innerHTML = FEATURE_META.map(m => {
       const f = df[m.key] || {};
-      const found = !!f.detected;
+      const directHit = !!f.detected;
       // A department hub link (e.g. nav has "Parts Center", and the actual
-      // "Order Parts" action only lives on that hub page) — surfaced so
-      // "not in nav" comes with something a strategist can actually click
-      // through and verify, instead of a bare unlinked claim.
-      const hub = !found && f.nearby_nav_link;
-      const detail = found
+      // "Order Parts" action only lives on that hub page) means the form
+      // genuinely exists on the site — worth a green pass, not a red "not
+      // found", since the feature itself is real. The nav-menu gap is real
+      // too, so it's surfaced as a disclaimer rather than silently dropped.
+      const hub = !directHit && f.nearby_nav_link;
+      const found = directHit || !!hub;
+      const disclaimer = hub ? `Present via "${escHtml(hub.text)}" — not directly in nav menu` : '';
+      const detail = directHit
         ? (f.provider ? escHtml(f.provider) : escHtml((f.evidence || '').substring(0, 50)))
         : hub
-          ? `Not directly in nav — via "${escHtml(hub.text)}"`
+          ? disclaimer
           : (NAV_SCOPED_KEYS.has(m.key) ? 'Not found in nav menu' : 'Not detected');
       const pill = `
         <div class="feature-pill ${found ? 'found' : 'missing'}">
@@ -1668,8 +1671,8 @@
           </div>
         </div>`;
       // Wrap in anchor linking to the source page if detected, or to the
-      // department hub link as supporting evidence when not.
-      const linkTarget = (found && (f.feature_url || f.source_page)) || (hub && hub.href);
+      // department hub link as supporting evidence when found only via one.
+      const linkTarget = (directHit && (f.feature_url || f.source_page)) || (hub && hub.href);
       return linkTarget
         ? `<a href="${escHtml(linkTarget)}" target="_blank" rel="noopener" style="text-decoration:none;display:block;cursor:pointer;">${pill}</a>`
         : pill;
@@ -1776,7 +1779,7 @@
             ? `All identified slides look relevant (${undetermined.length} topic unclear)`
             : 'All slide links appear topically relevant';
       const items = irrelevant.slice(0, 5).map(r =>
-        `<li><span class="hpc-badge warn">mismatch</span>${escHtml((r.slide_text||'').substring(0,50))} → <small>${escHtml(truncUrl(r.href))}</small></li>`
+        `<li><span class="hpc-badge warn">mismatch</span>${escHtml((r.slide_text||'').substring(0,50))} → <small><a href="${escHtml(r.href||'')}" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:underline;text-decoration-color:#444">${escHtml(truncUrl(r.href))}</a></small></li>`
       );
       html += card(st, 'Slide Link Relevance', note, itemList(items));
     }
@@ -1815,7 +1818,7 @@
     // Req 4: Non-slide broken images
     if (hpImgBroken.length) {
       const items = hpImgBroken.slice(0, 6).map(i =>
-        `<li><span class="hpc-badge err">${i.status_code}</span>${escHtml(truncUrl(i.src))}${i.alt ? ` <small style="color:#555">alt="${escHtml(i.alt.substring(0,25))}"</small>` : ''}</li>`
+        `<li><span class="hpc-badge err">${i.status_code}</span><a href="${escHtml(i.src||'')}" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:underline;text-decoration-color:#444">${escHtml(truncUrl(i.src))}</a>${i.alt ? ` <small style="color:#555">alt="${escHtml(i.alt.substring(0,25))}"</small>` : ''}</li>`
       );
       html += card('fail', 'Homepage Content Images',
         `${hpImgBroken.length} non-carousel/non-logo image(s) broken`, itemList(items));
@@ -1842,7 +1845,7 @@
     // Req 9: Nav duplicates
     if (navDupes.length) {
       const items = navDupes.slice(0, 6).map(d =>
-        `<li><span class="hpc-badge warn">${d.occurrences}×</span>${escHtml(d.text||'')} → <small>${escHtml(truncUrl(d.href))}</small></li>`
+        `<li><span class="hpc-badge warn">${d.occurrences}×</span>${escHtml(d.text||'')} → <small><a href="${escHtml(d.href||'')}" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:underline;text-decoration-color:#444">${escHtml(truncUrl(d.href))}</a></small></li>`
       );
       html += card('warn', 'Nav Duplicate URLs',
         `${navDupes.length} URL(s) appear more than once in the navigation`, itemList(items));
@@ -1870,7 +1873,7 @@
     if (logoCheck) {
       const st = logoCheck.status === 'pass' ? 'pass' : 'fail';
       const extra = logoCheck.href
-        ? `<div class="hpc-note" style="margin-top:2px;"><small>${escHtml(truncUrl(logoCheck.href))}</small></div>` : '';
+        ? `<div class="hpc-note" style="margin-top:2px;"><small><a href="${escHtml(logoCheck.href)}" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:underline;text-decoration-color:#444">${escHtml(truncUrl(logoCheck.href))}</a></small></div>` : '';
       html += card(st, 'Header Logo → Homepage', escHtml(logoCheck.note || ''), extra);
     } else {
       html += card('na', 'Header Logo → Homepage', 'Logo check not run', '');
@@ -1973,7 +1976,7 @@
         ? `${invBrokenLinks.length} broken SRP graphic/banner link(s)`
         : `All ${invCheckedLinks.length} SRP links resolve correctly`;
       const items = invBrokenLinks.slice(0, 6).map(l =>
-        `<li><span class="inv-badge err">${l.status_code || '?'}</span>${escHtml(truncUrl(l.href))} ${l.text ? `<small style="color:#555">· ${escHtml(l.text.substring(0,30))}</small>` : ''}</li>`
+        `<li><span class="inv-badge err">${l.status_code || '?'}</span><a href="${escHtml(l.href || '')}" target="_blank" rel="noopener" style="color:var(--blue)">${escHtml(truncUrl(l.href))}</a> ${l.text ? `<small style="color:#555">· ${escHtml(l.text.substring(0,30))}</small>` : ''}</li>`
       );
       html += invCard(st, 'SRP Graphic / Banner Links', note, invItemList(items));
     } else {
@@ -1998,7 +2001,7 @@
         ? `${poBrokenLinks.length} broken pre-owned SRP graphic/banner link(s)`
         : `All ${poCheckedLinks.length} pre-owned SRP links resolve correctly`;
       const items = poBrokenLinks.slice(0, 6).map(l =>
-        `<li><span class="inv-badge err">${l.status_code || '?'}</span>${escHtml(truncUrl(l.href))} ${l.text ? `<small style="color:#555">· ${escHtml(l.text.substring(0,30))}</small>` : ''}</li>`
+        `<li><span class="inv-badge err">${l.status_code || '?'}</span><a href="${escHtml(l.href || '')}" target="_blank" rel="noopener" style="color:var(--blue)">${escHtml(truncUrl(l.href))}</a> ${l.text ? `<small style="color:#555">· ${escHtml(l.text.substring(0,30))}</small>` : ''}</li>`
       );
       html += invCard(st, 'Pre-Owned SRP Graphic / Banner Links', note, invItemList(items));
     } else if (poScreenshot) {
@@ -2023,7 +2026,7 @@
         ? `${vdpBrokenLinks.length} broken VDP graphic/banner link(s)`
         : `All ${vdpCheckedLinks.length} VDP links resolve correctly`;
       const items = vdpBrokenLinks.slice(0, 6).map(l =>
-        `<li><span class="inv-badge err">${l.status_code || '?'}</span>${escHtml(truncUrl(l.href))}</li>`
+        `<li><span class="inv-badge err">${l.status_code || '?'}</span><a href="${escHtml(l.href || '')}" target="_blank" rel="noopener" style="color:var(--blue)">${escHtml(truncUrl(l.href))}</a></li>`
       );
       html += invCard(st, 'VDP Graphic / Banner Links', note, invItemList(items));
     } else {
