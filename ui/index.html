@@ -609,6 +609,24 @@
     }
     .feature-pill.found  { border-left: 3px solid var(--green); cursor: pointer; }
     .feature-pill.missing{ border-left: 3px solid #444; opacity: 0.6; }
+    #features-disclaimer {
+      display: none;
+      margin-top: 10px;
+      padding: 10px 12px;
+      background: #1a1508;
+      border: 1px solid #4a3a12;
+      border-left: 3px solid var(--orange);
+      border-radius: var(--radius);
+      font-size: 0.72rem;
+      color: #d9b877;
+      line-height: 1.6;
+    }
+    #features-disclaimer ul {
+      margin: 4px 0 0;
+      padding-left: 18px;
+    }
+    #features-disclaimer li { margin-bottom: 2px; }
+    #features-disclaimer a { color: inherit; text-decoration: underline; text-decoration-color: #7a5f2a; }
     a:hover .feature-pill.found { background: #1a1a1a; border-color: var(--green); box-shadow: 0 0 0 1px var(--green); }
     .feature-pill .ficon {
       font-size: 1.1rem;
@@ -1028,6 +1046,7 @@
     <div id="features-section">
       <p class="section-title">Dealership Features Detected</p>
       <div class="features-grid" id="features-grid"></div>
+      <div id="features-disclaimer"></div>
     </div>
 
     <!-- Sprint 5: Homepage & Site Checks -->
@@ -1194,6 +1213,8 @@
     document.getElementById('phones-body').innerHTML = '';
     document.getElementById('features-section').style.display = 'none';
     document.getElementById('features-grid').innerHTML = '';
+    document.getElementById('features-disclaimer').innerHTML = '';
+    document.getElementById('features-disclaimer').style.display = 'none';
     document.getElementById('hp-checks-section').style.display = 'none';
     document.getElementById('hp-checks-body').innerHTML = '';
     document.getElementById('inv-checks-section').style.display = 'none';
@@ -1645,6 +1666,12 @@
     // reading like the form doesn't exist at all.
     const NAV_SCOPED_KEYS = new Set(['contact_form', 'finance_form', 'trade_in_tool', 'service_scheduling', 'parts_form']);
 
+    // Collected alongside the pills so the dedicated disclaimer block below
+    // the grid can call out, by name, exactly which feature(s) this applies
+    // to — the pill's own caption already says it, but a strategist skimming
+    // just the grid can miss a single non-red pill's fine print entirely.
+    const hubDisclaimers = [];
+
     const grid = document.getElementById('features-grid');
     grid.innerHTML = FEATURE_META.map(m => {
       const f = df[m.key] || {};
@@ -1662,6 +1689,7 @@
         : hub
           ? disclaimer
           : (NAV_SCOPED_KEYS.has(m.key) ? 'Not found in nav menu' : 'Not detected');
+      if (hub) hubDisclaimers.push({ label: m.label, hub });
       const pill = `
         <div class="feature-pill ${found ? 'found' : 'missing'}">
           <span class="ficon">${m.icon}</span>
@@ -1677,6 +1705,21 @@
         ? `<a href="${escHtml(linkTarget)}" target="_blank" rel="noopener" style="text-decoration:none;display:block;cursor:pointer;">${pill}</a>`
         : pill;
     }).join('');
+
+    const disclaimerEl = document.getElementById('features-disclaimer');
+    if (hubDisclaimers.length) {
+      const rows = hubDisclaimers.map(({ label, hub }) => {
+        const link = hub.href
+          ? `<a href="${escHtml(hub.href)}" target="_blank" rel="noopener noreferrer">${escHtml(truncUrl(hub.href))}</a>`
+          : '';
+        return `<li><b>${escHtml(label)}</b> is present on the site but not directly linked from the primary navigation menu — found via "${escHtml(hub.text)}"${link ? ` (${link})` : ''}.</li>`;
+      }).join('');
+      disclaimerEl.innerHTML = `⚠ <b>${hubDisclaimers.length} feature${hubDisclaimers.length !== 1 ? 's' : ''}</b> found but not directly in the nav menu:<ul>${rows}</ul>`;
+      disclaimerEl.style.display = 'block';
+    } else {
+      disclaimerEl.innerHTML = '';
+      disclaimerEl.style.display = 'none';
+    }
 
     document.getElementById('features-section').style.display = 'block';
   }
@@ -1789,10 +1832,16 @@
       const parts = [];
       if (dimDesktop.length) parts.push(`${dimDesktop.length} carousel(s) inconsistent on desktop`);
       if (dimMobile.length)  parts.push(`${dimMobile.length} carousel(s) inconsistent on mobile`);
+      // Each mismatched size links back to the actual slide when the
+      // backend supplied an href, so a strategist can jump straight to it
+      // instead of hunting for which slide the dimensions belong to.
+      const dimSlide = (s) => s.href
+        ? `<a href="${escHtml(s.href)}" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:underline;text-decoration-color:#444">${s.width}×${s.height}</a>`
+        : `${s.width}×${s.height}`;
       const items = dimDesktop.slice(0, 3).map(d =>
-        `<li><span class="hpc-badge warn">desktop</span>Expected ${d.expected_width}×${d.expected_height} — got: ${d.inconsistent_slides.map(s=>`${s.width}×${s.height}`).join(', ')}</li>`
+        `<li><span class="hpc-badge warn">desktop</span>Expected ${d.expected_width}×${d.expected_height} — got: ${d.inconsistent_slides.map(dimSlide).join(', ')}</li>`
       ).concat(dimMobile.slice(0, 3).map(d =>
-        `<li><span class="hpc-badge info">mobile</span>Expected ${d.expected_width}×${d.expected_height} — got: ${d.inconsistent_slides.map(s=>`${s.width}×${s.height}`).join(', ')}</li>`
+        `<li><span class="hpc-badge info">mobile</span>Expected ${d.expected_width}×${d.expected_height} — got: ${d.inconsistent_slides.map(dimSlide).join(', ')}</li>`
       ));
       html += card('fail', 'Slide Dimension Consistency', parts.join(' · '), itemList(items));
     } else if (carouselChecked.length) {

@@ -490,17 +490,23 @@ def analyze_slide_dimensions(carousel_data: list[dict]) -> list[dict]:
     issues = []
     for ci, carousel in enumerate(carousel_data):
         slides = carousel.get("slides", [])
-        dims = [(s.get("width", 0), s.get("height", 0)) for s in slides if s.get("width") and s.get("height")]
+        # Keep href/slide_text alongside each slide's dimensions — dropping
+        # them (as this used to) left the UI with no way to link a mismatch
+        # back to the actual slide a strategist would need to open and fix.
+        dims = [
+            (s.get("width", 0), s.get("height", 0), s.get("href"), s.get("slide_text", ""))
+            for s in slides if s.get("width") and s.get("height")
+        ]
         if len(dims) < 2:
             continue
 
         # Use most-common dimension as expected
         from collections import Counter
-        most_common_dim, _ = Counter(dims).most_common(1)[0]
+        most_common_dim, _ = Counter((w, h) for w, h, _, _ in dims).most_common(1)[0]
         exp_w, exp_h = most_common_dim
         inconsistent = [
-            {"index": i, "width": w, "height": h}
-            for i, (w, h) in enumerate(dims)
+            {"index": i, "width": w, "height": h, "href": href, "slide_text": (text or "")[:80]}
+            for i, (w, h, href, text) in enumerate(dims)
             if (w, h) != most_common_dim
         ]
         if inconsistent:
