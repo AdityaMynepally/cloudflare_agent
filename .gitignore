@@ -32,6 +32,9 @@ results/
 sessions/
 screenshots/
 
+# OEM brand guideline source PDFs (not for distribution)
+files/
+
 # macOS
 .DS_Store
 Thumbs.db
