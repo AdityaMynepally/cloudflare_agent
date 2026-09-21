@@ -18,12 +18,21 @@ import statistics
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Literal
 
 FormFactor = Literal["mobile", "desktop"]
 
 RUNS_PER_FORM_FACTOR = 3
+
+# chrome-launcher's post-run profile cleanup is flaky on Windows: it races
+# against Chrome releasing its file handles and against antivirus actively
+# scanning the temp profile, and loses often enough to fail with
+# "EBUSY: resource busy or locked" even though the audit itself succeeded.
+# It's transient, so a short retry clears it almost every time.
+MAX_ATTEMPTS = 3
+RETRY_BACKOFF_SECONDS = 2
 
 # `shutil.which` resolves through PATHEXT on Windows (finds npx.cmd, not just
 # "npx"), which `subprocess.run` cannot locate on its own without shell=True.
@@ -54,7 +63,11 @@ def band_score(score: int, form_factor: FormFactor) -> str:
 
 
 def run_lighthouse_once(url: str, form_factor: FormFactor) -> int:
-    """Run one Lighthouse pass, return the performance score 0-100."""
+    """Run one Lighthouse pass, return the performance score 0-100.
+
+    Retries transient failures (e.g. Windows' chrome-launcher cleanup race)
+    a few times before giving up.
+    """
     if NPX_PATH is None:
         raise RuntimeError(
             "npx not found on PATH — Node.js is required to run Lighthouse.\n"
@@ -65,6 +78,22 @@ def run_lighthouse_once(url: str, form_factor: FormFactor) -> int:
             "Then open a new terminal and re-run this script."
         )
 
+    last_error: Exception | None = None
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        try:
+            return _run_lighthouse_attempt(url, form_factor)
+        except (RuntimeError, OSError, json.JSONDecodeError) as e:
+            last_error = e
+            if attempt < MAX_ATTEMPTS:
+                delay = RETRY_BACKOFF_SECONDS * attempt
+                print(f"(attempt {attempt} failed, retrying in {delay}s) ", end="", flush=True)
+                time.sleep(delay)
+
+    raise last_error
+
+
+def _run_lighthouse_attempt(url: str, form_factor: FormFactor) -> int:
+    """One Lighthouse subprocess invocation, no retry logic."""
     with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
         out_path = Path(tmp.name)
 
@@ -79,11 +108,19 @@ def run_lighthouse_once(url: str, form_factor: FormFactor) -> int:
         cmd.append("--preset=desktop")
 
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+        # Explicit UTF-8 everywhere: Lighthouse writes its report (and Chrome's
+        # own stdout/stderr chatter) as UTF-8, but Windows' default locale
+        # encoding is cp1252, not UTF-8 — decoding either stream without
+        # forcing UTF-8 raises UnicodeDecodeError the moment the page/report
+        # contains a byte sequence cp1252 can't represent.
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=180,
+            encoding="utf-8", errors="replace",
+        )
         if result.returncode != 0:
             raise RuntimeError(f"lighthouse exited {result.returncode}: {result.stderr[-2000:]}")
 
-        report = json.loads(out_path.read_text())
+        report = json.loads(out_path.read_text(encoding="utf-8"))
         raw_score = report["categories"]["performance"]["score"]
         return round(raw_score * 100)
     finally:
