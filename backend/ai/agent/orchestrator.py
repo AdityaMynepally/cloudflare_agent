@@ -38,6 +38,7 @@ from ai.analysis.performance import analyze_performance
 from ai.analysis.links import check_links
 from ai.analysis.images import check_images
 from ai.analysis.gbp import fetch_gbp_data, compare_address, compare_hours
+from ai.analysis.lighthouse import run_lighthouse_audit
 from ai.analysis.inventory import (
     categorize_inventory_url,
     check_inventory_graphic_links,
@@ -410,6 +411,9 @@ class AuditOrchestrator:
 
             # ---- Phase 2.6: GOOGLE BUSINESS PROFILE VERIFICATION ----
             await self._run_gbp_phase(session, emit)
+
+            # ---- Phase 2.7: LIGHTHOUSE PERFORMANCE SCORE ----
+            await self._run_lighthouse_phase(session, emit)
 
             # ---- Phase 3: SUMMARIZING ----
             session.status = AuditStatus.SUMMARIZING
@@ -1664,6 +1668,39 @@ class AuditOrchestrator:
 
         except Exception as e:
             logger.warning(f"GBP phase error (non-fatal): {e}", exc_info=True)
+
+    async def _run_lighthouse_phase(self, session: AuditSession, emit) -> None:
+        """Run real Lighthouse (3x mobile + 3x desktop, median) against the homepage."""
+        try:
+            target_url = session.target_url or ""
+            if not target_url:
+                return
+
+            await emit("progress",
+                "Running Lighthouse performance audit (3x mobile + 3x desktop — this can take a few minutes)...",
+                {"status": "lighthouse"},
+            )
+
+            async def _on_form_factor_done(form_factor: str, result: dict) -> None:
+                await emit("progress",
+                    f"Lighthouse {form_factor}: {result['median']} ({result['band'].upper()})",
+                    {"status": "lighthouse", "form_factor": form_factor, **result},
+                )
+
+            result = await run_lighthouse_audit(target_url, on_progress=_on_form_factor_done)
+            if not result:
+                logger.warning("[Lighthouse] skipped — Node/npx not available on this machine")
+                return
+
+            session.lighthouse_score = result
+            m, d = result["mobile"], result["desktop"]
+            logger.info(
+                f"[Lighthouse] {target_url} — mobile {m['median']} ({m['band']}), "
+                f"desktop {d['median']} ({d['band']})"
+            )
+
+        except Exception as e:
+            logger.warning(f"Lighthouse phase error (non-fatal): {e}", exc_info=True)
 
     async def _process_capture_for_viewport(
         self,

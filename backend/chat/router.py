@@ -311,6 +311,7 @@ async def download_pptx(session_id: str):
             "oversized_images_all": result.get("oversized_images_all", []),
             "js_errors_all": result.get("js_errors_all", []),
             "page_load_times": result.get("page_load_times", []),
+            "lighthouse_score": result.get("lighthouse_score"),
         },
     )
 

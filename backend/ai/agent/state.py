@@ -273,6 +273,8 @@ class AuditSession:
     gbp_data: Optional[dict] = None                # raw GBP Places API result
     address_comparison: Optional[dict] = None      # {match, website, gbp, note}
     hours_discrepancies: list = field(default_factory=list)  # [{day, website, gbp}]
+    # Real Lighthouse performance score (homepage, 3x mobile + 3x desktop, median)
+    lighthouse_score: Optional[dict] = None  # {mobile: {runs, median, band}, desktop: {runs, median, band}}
     # Sprint 3 — phone numbers aggregated across all pages (deduplicated)
     # Each entry: {number, display, department, source_page}
     phone_numbers_all: list = field(default_factory=list)
@@ -378,6 +380,7 @@ class AuditSession:
             "gbp_data": self.gbp_data,
             "address_comparison": self.address_comparison,
             "hours_discrepancies": self.hours_discrepancies,
+            "lighthouse_score": self.lighthouse_score,
             "phone_numbers_all": self.phone_numbers_all,
             "broken_links_all": self.broken_links_all,
             "broken_images_all": self.broken_images_all,

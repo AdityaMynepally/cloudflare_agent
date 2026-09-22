@@ -477,10 +477,30 @@ def generate_audit_pptx(
     oversized_images = sm.get("oversized_images_all", [])
     js_errors = sm.get("js_errors_all", [])
     page_load_times = sm.get("page_load_times", [])
+    lighthouse_score = sm.get("lighthouse_score")
 
-    has_any_metrics = any([broken_links, broken_images, oversized_images, js_errors, page_load_times])
+    has_any_metrics = any([
+        broken_links, broken_images, oversized_images, js_errors,
+        page_load_times, lighthouse_score,
+    ])
     if has_any_metrics:
         _add_section_divider(prs, "Technical Audit Findings", "Automated quality checks")
+
+        # Lighthouse performance score slide
+        if lighthouse_score:
+            m = lighthouse_score.get("mobile", {})
+            d = lighthouse_score.get("desktop", {})
+            lh_items = [
+                f"Mobile:   {m.get('median', '?')}/100 — {str(m.get('band', '?')).upper()}   "
+                f"(runs: {m.get('runs', [])})",
+                f"Desktop:  {d.get('median', '?')}/100 — {str(d.get('band', '?')).upper()}   "
+                f"(runs: {d.get('runs', [])})",
+                "",
+                "3 runs per viewport, median score, banded against auto-industry norms "
+                "(mobile: 0-24 subpar / 25-44 average / 45-100 excellent; "
+                "desktop: 0-24 subpar / 25-74 average / 75-100 excellent).",
+            ]
+            _add_bullet_list_slide(prs, "Performance Score (Lighthouse)", lh_items, "Lighthouse score unavailable")
 
         # Broken links slide
         link_items = [

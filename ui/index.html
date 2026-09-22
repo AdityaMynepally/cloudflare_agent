@@ -493,6 +493,21 @@
     }
     .load-time-table .slow { color: #f87171; }
     .load-time-table .ok   { color: #86efac; }
+    .lh-badge {
+      display: inline-block;
+      background: #1a1a1a;
+      border: 1px solid #333;
+      border-left: 3px solid #555;
+      border-radius: 4px;
+      padding: 4px 10px;
+      font-size: 0.8rem;
+      color: #ddd;
+      margin: 0 8px 6px 0;
+    }
+    .lh-badge b { font-size: 0.95rem; }
+    .lh-badge.band-excellent { border-left-color: var(--green); }
+    .lh-badge.band-average   { border-left-color: var(--orange); }
+    .lh-badge.band-subpar    { border-left-color: var(--red); }
     .avg-badge {
       display: inline-block;
       background: #1a1a1a;
@@ -1015,6 +1030,12 @@
           <ul class="finding-items" id="fc-jserrors-list"></ul>
         </div>
       </div>
+      <!-- Lighthouse Performance Score -->
+      <div class="finding-card" id="fc-lighthouse" style="margin-bottom:12px; display:none;">
+        <h4>Performance Score (Lighthouse) <span class="count" id="fc-lighthouse-count">—</span></h4>
+        <div id="fc-lighthouse-badges"></div>
+      </div>
+
       <!-- Page Load Times -->
       <div class="finding-card" id="fc-loadtimes" style="margin-bottom:12px;">
         <h4>Page Load Times <span class="count" id="fc-loadtimes-avg">—</span></h4>
@@ -1555,10 +1576,24 @@
     const oi  = full.oversized_images_all || [];
     const je  = full.js_errors_all      || [];
     const plt = full.page_load_times    || [];
+    const lh  = full.lighthouse_score;
 
-    if (!bl.length && !bi.length && !oi.length && !je.length && !plt.length) return;
+    if (!bl.length && !bi.length && !oi.length && !je.length && !plt.length && !lh) return;
 
     document.getElementById('findings-section').style.display = 'block';
+
+    // Lighthouse performance score
+    if (lh && lh.mobile && lh.desktop) {
+      const card = document.getElementById('fc-lighthouse');
+      card.style.display = 'block';
+      document.getElementById('fc-lighthouse-count').textContent = 'LIVE';
+      const badge = (label, r) => {
+        const band = (r.band || '?').toLowerCase();
+        return `<span class="lh-badge band-${escHtml(band)}">${label}: <b>${r.median}/100</b> — ${escHtml((r.band || '?').toUpperCase())}</span>`;
+      };
+      document.getElementById('fc-lighthouse-badges').innerHTML =
+        badge('Mobile', lh.mobile) + badge('Desktop', lh.desktop);
+    }
 
     function fillCard(cardId, countId, listId, items, renderItem) {
       const count = items.length;
