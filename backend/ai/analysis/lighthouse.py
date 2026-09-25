@@ -15,6 +15,7 @@ same as the standalone POC).
 import asyncio
 import json
 import logging
+import os
 import shutil
 import statistics
 import subprocess
@@ -42,6 +43,17 @@ RETRY_BACKOFF_SECONDS = 2
 # Resolving it once up front lets us pass the real executable path and keep
 # shell=False everywhere (avoids shell-quoting issues with the URL argument).
 NPX_PATH = shutil.which("npx")
+
+# Headless Chrome refuses to launch as root ("Running as root without
+# --no-sandbox is not supported") unless told otherwise, which is exactly
+# how containers (e.g. this app's own Docker image) run by default. Only
+# relax the sandbox when we're actually root — keep the extra protection on
+# dev machines where we're not. --disable-dev-shm-usage avoids crashes from
+# containers' small default /dev/shm.
+_CHROME_FLAGS = ["--headless=new"]
+if hasattr(os, "geteuid") and os.geteuid() == 0:
+    _CHROME_FLAGS += ["--no-sandbox", "--disable-dev-shm-usage"]
+CHROME_FLAGS = " ".join(_CHROME_FLAGS)
 
 # Auto-industry performance bands, as specified in the pitch.
 BANDS: dict[FormFactor, list[tuple[int, int, str]]] = {
@@ -96,7 +108,7 @@ def _run_lighthouse_attempt(url: str, form_factor: FormFactor) -> int:
     cmd = [
         NPX_PATH, "--yes", "lighthouse@12", url,
         "--output=json", f"--output-path={out_path}",
-        "--chrome-flags=--headless=new",
+        f"--chrome-flags={CHROME_FLAGS}",
         "--only-categories=performance",
         "--quiet",
     ]
