@@ -311,51 +311,6 @@
     .thumb a { display: block; width: 100%; height: 100%; }
     .thumb a:hover img { opacity: .85; }
 
-    /* ---- Phone Numbers (Sprint 3) ---- */
-    #phones-section {
-      display: none;
-      margin-top: 20px;
-    }
-    #phones-section .section-title {
-      font-size: 0.82rem;
-      font-weight: 600;
-      color: var(--gray);
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-      margin-bottom: 10px;
-    }
-    .phones-dept {
-      margin-bottom: 10px;
-    }
-    .phones-dept-label {
-      font-size: 0.72rem;
-      font-weight: 700;
-      color: var(--orange);
-      text-transform: uppercase;
-      letter-spacing: 0.06em;
-      margin-bottom: 5px;
-    }
-    .phones-list {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 6px;
-    }
-    .phone-chip {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      background: #111;
-      border: 1px solid var(--border);
-      border-radius: 999px;
-      padding: 4px 12px;
-      font-size: 0.78rem;
-      color: #ddd;
-      text-decoration: none;
-      transition: border-color .15s;
-    }
-    .phone-chip:hover { border-color: var(--orange); color: var(--white); }
-    .phone-chip .ph-icon { color: var(--green); font-size: 0.82rem; }
-
     /* ---- Technical Findings ---- */
     #findings-section { display: none; margin-top: 20px; }
 
@@ -1057,12 +1012,6 @@
       <div id="gbp-body"></div>
     </div>
 
-    <!-- Phone Numbers (Sprint 3) -->
-    <div id="phones-section">
-      <p class="section-title">Phone Numbers Found</p>
-      <div id="phones-body"></div>
-    </div>
-
     <!-- Dealership Features (Sprint 2) -->
     <div id="features-section">
       <p class="section-title">Dealership Features Detected</p>
@@ -1230,8 +1179,6 @@
     document.getElementById('findings-section').style.display = 'none';
     document.getElementById('gbp-section').style.display = 'none';
     document.getElementById('gbp-body').innerHTML = '';
-    document.getElementById('phones-section').style.display = 'none';
-    document.getElementById('phones-body').innerHTML = '';
     document.getElementById('features-section').style.display = 'none';
     document.getElementById('features-grid').innerHTML = '';
     document.getElementById('features-disclaimer').innerHTML = '';
@@ -1317,7 +1264,6 @@
       renderShots(full);
       renderFindings(full);
       renderGBP(full);
-      renderPhones(full);
       renderFeatures(full);
       renderHomepageChecks(full);
       renderInventoryChecks(full);
@@ -1525,49 +1471,6 @@
     document.getElementById('gbp-section').style.display = 'block';
   }
 
-  /* ---------- Phone Numbers ---------- */
-  function fmtPhone(raw) {
-    // Normalize to XXX-XXX-XXXX (US format, no parens, no dots)
-    const digits = (raw || '').replace(/\D/g, '');
-    const d = digits.length > 10 ? digits.slice(-10) : digits;
-    if (d.length === 10) return `${d.slice(0,3)}-${d.slice(3,6)}-${d.slice(6)}`;
-    return raw; // fallback for non-standard lengths
-  }
-
-  function renderPhones(full) {
-    const phones = full.phone_numbers_all || [];
-    if (!phones.length) return;
-
-    const DEPT_ORDER = ['Main', 'Sales', 'Service', 'Parts', 'Finance'];
-    const DEPT_ICONS = { Main: '☎️', Sales: '🚗', Service: '🔧', Parts: '⚙️', Finance: '💳' };
-
-    const grouped = {};
-    for (const ph of phones) {
-      const dept = ph.department || 'Main';
-      (grouped[dept] = grouped[dept] || []).push(ph);
-    }
-
-    const depts = [...DEPT_ORDER.filter(d => grouped[d]), ...Object.keys(grouped).filter(d => !DEPT_ORDER.includes(d))];
-
-    const body = document.getElementById('phones-body');
-    body.innerHTML = depts.map(dept => {
-      const items = grouped[dept];
-      const icon  = DEPT_ICONS[dept] || '📞';
-      const chips = items.map(ph => {
-        const formatted = fmtPhone(ph.number || ph.display || '');
-        const digits    = (ph.number || '').replace(/\D/g, '');
-        const tel       = 'tel:+1' + digits.slice(-10);
-        return `<a class="phone-chip" href="${escHtml(tel)}"><span class="ph-icon">${icon}</span>${escHtml(formatted)}</a>`;
-      }).join('');
-      return `
-        <div class="phones-dept">
-          <div class="phones-dept-label">${escHtml(dept)}</div>
-          <div class="phones-list">${chips}</div>
-        </div>`;
-    }).join('');
-
-    document.getElementById('phones-section').style.display = 'block';
-  }
 
   /* ---------- Technical Findings ---------- */
   function renderFindings(full) {
@@ -1761,26 +1664,13 @@
 
   /* ---------- Sprint 5: Homepage & Site Checks ---------- */
   function renderHomepageChecks(full) {
-    const carouselBroken   = full.carousel_broken_links        || [];
-    const carouselChecked  = full.carousel_checked_links       || [];
-    const carouselRel      = full.carousel_link_relevance      || [];
-    const ctaBroken        = full.cta_broken_links             || [];
-    const ctaChecked       = full.cta_checked_links            || [];
-    const hpImgBroken      = full.homepage_broken_content_images || [];
-    const dimDesktop       = full.carousel_dimension_issues_desktop || [];
-    const dimMobile        = full.carousel_dimension_issues_mobile  || [];
-    const navBroken        = full.nav_broken_links             || [];
-    const navChecked       = full.nav_checked_links            || [];
     const navDupes         = full.nav_duplicate_links          || [];
     const navExpired       = full.nav_expired_dates            || [];
-    const logoCheck        = full.header_logo_check            || null;
     const socialBroken     = full.social_media_broken          || [];
     const socialNoTab      = full.social_media_no_new_tab      || [];
     const socialChecked    = full.social_media_checked         || [];
 
-    const hasAnyData = carouselChecked.length || ctaChecked.length || navChecked.length ||
-      socialChecked.length || hpImgBroken.length || dimDesktop.length || dimMobile.length ||
-      navExpired.length || logoCheck;
+    const hasAnyData = socialChecked.length || navExpired.length || navDupes.length;
     if (!hasAnyData) return;
 
     // ---- helpers ----
@@ -1825,106 +1715,8 @@
 
     let html = '';
 
-    // ---- Group 1: Carousel ----
-    html += `<div class="hpc-group-label">Carousel / Slideshow</div><div class="hpc-grid">`;
-
-    // Req 1: Carousel slide links 404
-    if (carouselChecked.length) {
-      const st = carouselBroken.length ? 'fail' : 'pass';
-      const note = carouselBroken.length
-        ? `${carouselBroken.length} slide link(s) returning 404`
-        : 'All slide links load successfully';
-      html += card(st, 'Carousel Slide Links — 404', note, checkedAccordion(carouselChecked));
-    }
-
-    // Req 2: Carousel link relevance
-    const irrelevant = carouselRel.filter(r => r.relevant === false);
-    const undetermined = carouselRel.filter(r => r.relevant === null);
-    if (carouselRel.length) {
-      // A clean "pass" implies relevance was actually checked — when most
-      // slides' topics couldn't be determined at all, that's not a
-      // confident pass, it's an inconclusive result, and reporting it as
-      // one green-checkmark "pass" (even with an honest count in the note)
-      // reads as "nothing to worry about" to a skimming strategist.
-      const mostlyUndetermined = !irrelevant.length && undetermined.length > 0 &&
-        undetermined.length / carouselRel.length >= 0.5;
-      const st = irrelevant.length ? 'warn' : mostlyUndetermined ? 'warn' : 'pass';
-      const note = irrelevant.length
-        ? `${irrelevant.length} slide(s) may link to unrelated pages`
-        : mostlyUndetermined
-          ? `Could not confirm relevance for ${undetermined.length} of ${carouselRel.length} slides — manual review recommended`
-          : undetermined.length
-            ? `All identified slides look relevant (${undetermined.length} topic unclear)`
-            : 'All slide links appear topically relevant';
-      const items = irrelevant.slice(0, 5).map(r =>
-        `<li><span class="hpc-badge warn">mismatch</span>${escHtml((r.slide_text||'').substring(0,50))} → <small><a href="${escHtml(r.href||'')}" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:underline;text-decoration-color:#444">${escHtml(truncUrl(r.href))}</a></small></li>`
-      );
-      html += card(st, 'Slide Link Relevance', note, itemList(items));
-    }
-
-    // Reqs 5 & 6: Slide dimensions
-    if (dimDesktop.length || dimMobile.length) {
-      const parts = [];
-      if (dimDesktop.length) parts.push(`${dimDesktop.length} carousel(s) inconsistent on desktop`);
-      if (dimMobile.length)  parts.push(`${dimMobile.length} carousel(s) inconsistent on mobile`);
-      // Each mismatched size links back to the actual slide when the
-      // backend supplied an href, so a strategist can jump straight to it
-      // instead of hunting for which slide the dimensions belong to.
-      const dimSlide = (s) => s.href
-        ? `<a href="${escHtml(s.href)}" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:underline;text-decoration-color:#444">${s.width}×${s.height}</a>`
-        : `${s.width}×${s.height}`;
-      const items = dimDesktop.slice(0, 3).map(d =>
-        `<li><span class="hpc-badge warn">desktop</span>Expected ${d.expected_width}×${d.expected_height} — got: ${d.inconsistent_slides.map(dimSlide).join(', ')}</li>`
-      ).concat(dimMobile.slice(0, 3).map(d =>
-        `<li><span class="hpc-badge info">mobile</span>Expected ${d.expected_width}×${d.expected_height} — got: ${d.inconsistent_slides.map(dimSlide).join(', ')}</li>`
-      ));
-      html += card('fail', 'Slide Dimension Consistency', parts.join(' · '), itemList(items));
-    } else if (carouselChecked.length) {
-      html += card('pass', 'Slide Dimension Consistency', 'All carousel slides are the same size (desktop &amp; mobile)', '');
-    }
-
-    html += `</div>`;
-
-    // ---- Group 2: Homepage CTAs & Images ----
-    html += `<div class="hpc-group-label">Homepage CTAs &amp; Images</div><div class="hpc-grid">`;
-
-    // Req 3: CTA links
-    if (ctaChecked.length) {
-      const st = ctaBroken.length ? 'fail' : 'pass';
-      const note = ctaBroken.length
-        ? `${ctaBroken.length} CTA link(s) returning 404`
-        : 'All CTA links load successfully';
-      html += card(st, 'CTA Button / Banner Links', note, checkedAccordion(ctaChecked));
-    } else {
-      html += card('na', 'CTA Button / Banner Links', 'No CTA links detected on homepage', '');
-    }
-
-    // Req 4: Non-slide broken images
-    if (hpImgBroken.length) {
-      const items = hpImgBroken.slice(0, 6).map(i =>
-        `<li><span class="hpc-badge err">${i.status_code}</span><a href="${escHtml(i.src||'')}" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:underline;text-decoration-color:#444">${escHtml(truncUrl(i.src))}</a>${i.alt ? ` <small style="color:#555">alt="${escHtml(i.alt.substring(0,25))}"</small>` : ''}</li>`
-      );
-      html += card('fail', 'Homepage Content Images',
-        `${hpImgBroken.length} non-carousel/non-logo image(s) broken`, itemList(items));
-    } else {
-      html += card('pass', 'Homepage Content Images', 'No broken homepage content images detected', '');
-    }
-
-    html += `</div>`;
-
-    // ---- Group 3: Navigation ----
+    // ---- Group 1: Navigation ----
     html += `<div class="hpc-group-label">Navigation</div><div class="hpc-grid">`;
-
-    // Req 8: Nav 404 — accordion shows only the broken ones
-    if (navChecked.length) {
-      const st = navBroken.length ? 'fail' : 'pass';
-      const note = navBroken.length
-        ? `${navBroken.length} of ${navChecked.length} nav link(s) returning 404`
-        : `All ${navChecked.length} navigation links load successfully`;
-      html += card(st, 'Nav Links — 404 Check', note, checkedAccordion(navBroken));
-    } else {
-      html += card('na', 'Nav Links — 404 Check', 'No navigation links detected', '');
-    }
 
     // Req 9: Nav duplicates
     if (navDupes.length) {
@@ -1933,7 +1725,7 @@
       );
       html += card('warn', 'Nav Duplicate URLs',
         `${navDupes.length} URL(s) appear more than once in the navigation`, itemList(items));
-    } else if (navChecked.length) {
+    } else {
       html += card('pass', 'Nav Duplicate URLs', 'No duplicate URLs found in navigation', '');
     }
 
@@ -1950,18 +1742,8 @@
 
     html += `</div>`;
 
-    // ---- Group 4: Site-wide ----
+    // ---- Group 2: Site-wide ----
     html += `<div class="hpc-group-label">Site-wide</div><div class="hpc-grid">`;
-
-    // Req 10: Header logo
-    if (logoCheck) {
-      const st = logoCheck.status === 'pass' ? 'pass' : 'fail';
-      const extra = logoCheck.href
-        ? `<div class="hpc-note" style="margin-top:2px;"><small><a href="${escHtml(logoCheck.href)}" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:underline;text-decoration-color:#444">${escHtml(truncUrl(logoCheck.href))}</a></small></div>` : '';
-      html += card(st, 'Header Logo → Homepage', escHtml(logoCheck.note || ''), extra);
-    } else {
-      html += card('na', 'Header Logo → Homepage', 'Logo check not run', '');
-    }
 
     // Reqs 11 & 12: Social media — combined card with checked accordion
     if (socialChecked.length) {

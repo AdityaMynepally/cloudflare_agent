@@ -74,13 +74,9 @@ class ViewportResult:
     forms: list = field(default_factory=list)
     buttons: list = field(default_factory=list)
     page_features: Optional[dict] = None
-    phone_numbers: list = field(default_factory=list)
     business_info: Optional[dict] = None
     # Sprint 5 — per-page data (passed through from content script)
-    carousel_data: list = field(default_factory=list)
-    cta_links: list = field(default_factory=list)
     nav_menu_data: list = field(default_factory=list)
-    header_logo_info: Optional[dict] = None
     social_links: list = field(default_factory=list)
     page_dates: list = field(default_factory=list)
     error: Optional[str] = None
@@ -275,23 +271,9 @@ class AuditSession:
     hours_discrepancies: list = field(default_factory=list)  # [{day, website, gbp}]
     # Real Lighthouse performance score (homepage, 3x mobile + 3x desktop, median)
     lighthouse_score: Optional[dict] = None  # {mobile: {runs, median, band}, desktop: {runs, median, band}}
-    # Sprint 3 — phone numbers aggregated across all pages (deduplicated)
-    # Each entry: {number, display, department, source_page}
-    phone_numbers_all: list = field(default_factory=list)
     # Sprint 5 — homepage-specific checks
-    carousel_broken_links: list = field(default_factory=list)          # req 1: {href, slide_text, status_code}
-    carousel_checked_links: list = field(default_factory=list)         # req 1: all checked {href, slide_text, status_code, ok}
-    carousel_link_relevance: list = field(default_factory=list)        # req 2: {href, slide_text, relevant, reason}
-    cta_broken_links: list = field(default_factory=list)               # req 3: {href, text, status_code}
-    cta_checked_links: list = field(default_factory=list)              # req 3: all checked {href, text, status_code, ok}
-    homepage_broken_content_images: list = field(default_factory=list) # req 4: {src, alt, status_code}
-    carousel_dimension_issues_desktop: list = field(default_factory=list)  # req 5
-    carousel_dimension_issues_mobile: list = field(default_factory=list)   # req 6
     nav_expired_dates: list = field(default_factory=list)              # req 7: {date_str, context, source_page}
-    nav_broken_links: list = field(default_factory=list)               # req 8: {href, text, status_code}
-    nav_checked_links: list = field(default_factory=list)              # req 8: all checked {href, text, status_code, ok}
     nav_duplicate_links: list = field(default_factory=list)            # req 9: {href, text, occurrences}
-    header_logo_check: Optional[dict] = None                           # req 10: {has_link, href, links_to_homepage, status, note}
     social_media_broken: list = field(default_factory=list)            # req 11: {href, platform, status_code}
     social_media_no_new_tab: list = field(default_factory=list)        # req 12: {href, platform, text}
     social_media_checked: list = field(default_factory=list)           # req 11/12: all checked {href, platform, status_code, ok, opens_new_tab}
@@ -381,7 +363,6 @@ class AuditSession:
             "address_comparison": self.address_comparison,
             "hours_discrepancies": self.hours_discrepancies,
             "lighthouse_score": self.lighthouse_score,
-            "phone_numbers_all": self.phone_numbers_all,
             "broken_links_all": self.broken_links_all,
             "broken_images_all": self.broken_images_all,
             "oversized_images_all": self.oversized_images_all,
@@ -411,19 +392,8 @@ class AuditSession:
             "model_year_check": self.model_year_check,
             "inventory_expired_dates": self.inventory_expired_dates,
             # Sprint 5
-            "carousel_broken_links": self.carousel_broken_links,
-            "carousel_checked_links": self.carousel_checked_links,
-            "carousel_link_relevance": self.carousel_link_relevance,
-            "cta_broken_links": self.cta_broken_links,
-            "cta_checked_links": self.cta_checked_links,
-            "homepage_broken_content_images": self.homepage_broken_content_images,
-            "carousel_dimension_issues_desktop": self.carousel_dimension_issues_desktop,
-            "carousel_dimension_issues_mobile": self.carousel_dimension_issues_mobile,
             "nav_expired_dates": self.nav_expired_dates,
-            "nav_broken_links": self.nav_broken_links,
-            "nav_checked_links": self.nav_checked_links,
             "nav_duplicate_links": self.nav_duplicate_links,
-            "header_logo_check": self.header_logo_check,
             "social_media_broken": self.social_media_broken,
             "social_media_no_new_tab": self.social_media_no_new_tab,
             "social_media_checked": self.social_media_checked,

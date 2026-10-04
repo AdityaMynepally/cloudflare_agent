@@ -50,13 +50,7 @@ from ai.analysis.inventory import (
     extract_model_years,
 )
 from ai.analysis.homepage import (
-    check_carousel_links,
-    assess_carousel_relevance,
-    check_cta_links,
-    check_homepage_content_images,
-    analyze_slide_dimensions,
-    check_nav_links,
-    check_header_logo,
+    find_nav_duplicate_links,
     check_social_media_links,
 )
 from ai.analysis.summarizer import summarize_page, summarize_site, generate_recommendations
@@ -473,7 +467,6 @@ class AuditOrchestrator:
                 "completed_at": session.completed_at,
                 "has_vdp": session.vdp_screenshot is not None,
                 "vdp_url": (session.vdp_screenshot or {}).get("url"),
-                "phone_numbers_count": len(session.phone_numbers_all),
                 "broken_links_count": len(session.broken_links_all),
                 "broken_images_count": len(session.broken_images_all),
                 "oversized_images_count": len(session.oversized_images_all),
@@ -493,17 +486,10 @@ class AuditOrchestrator:
                 "model_year_check": session.model_year_check,
                 "inventory_expired_dates_count": len(session.inventory_expired_dates),
                 # Sprint 5 counts
-                "carousel_broken_links_count": len(session.carousel_broken_links),
-                "cta_broken_links_count": len(session.cta_broken_links),
-                "nav_broken_links_count": len(session.nav_broken_links),
                 "nav_duplicate_links_count": len(session.nav_duplicate_links),
                 "social_media_broken_count": len(session.social_media_broken),
                 "social_media_no_new_tab_count": len(session.social_media_no_new_tab),
-                "header_logo_check": session.header_logo_check,
-                "carousel_dimension_issues_desktop": len(session.carousel_dimension_issues_desktop),
-                "carousel_dimension_issues_mobile": len(session.carousel_dimension_issues_mobile),
                 "nav_expired_dates_count": len(session.nav_expired_dates),
-                "homepage_broken_content_images_count": len(session.homepage_broken_content_images),
                 "avg_load_time_ms": (
                     round(sum(t["load_time_ms"] for t in session.page_load_times if t.get("viewport") == "desktop") /
                           max(len([t for t in session.page_load_times if t.get("viewport") == "desktop"]), 1), 0)
@@ -1558,64 +1544,19 @@ class AuditOrchestrator:
         try:
             await emit("progress", "Running homepage-specific checks...", {"status": "homepage_checks"})
 
-            base_url = session.target_url
-            carousel_desktop = desktop_capture.get("carousel_data") or []
-            carousel_mobile = mobile_capture.get("carousel_data") or []
-            cta_links = desktop_capture.get("cta_links") or []
             nav_links = desktop_capture.get("nav_menu_data") or []
-            logo_info = desktop_capture.get("header_logo_info") or {}
             social_links = desktop_capture.get("social_links") or []
-            images = desktop_capture.get("images") or []
-            image_resources = (desktop_capture.get("performance_data") or {}).get("imageResources") or []
 
-            # Run all async checks concurrently
-            (
-                carousel_result,
-                cta_result,
-                homepage_img_broken,
-                nav_result,
-                social_result,
-            ) = await asyncio.gather(
-                check_carousel_links(carousel_desktop, base_url),
-                check_cta_links(cta_links, base_url),
-                check_homepage_content_images(images, base_url, image_resources),
-                check_nav_links(nav_links, base_url),
-                check_social_media_links(social_links),
-            )
+            social_broken, social_no_new_tab, social_checked = await check_social_media_links(social_links)
 
-            carousel_broken, carousel_checked = carousel_result
-            cta_broken, cta_checked = cta_result
-            nav_broken, nav_dupes, nav_checked = nav_result
-            social_broken, social_no_new_tab, social_checked = social_result
-
-            # Synchronous checks
-            session.carousel_broken_links = carousel_broken
-            session.carousel_checked_links = carousel_checked
-            session.carousel_link_relevance = assess_carousel_relevance(carousel_desktop)
-            session.cta_broken_links = cta_broken
-            session.cta_checked_links = cta_checked
-            session.homepage_broken_content_images = homepage_img_broken
-            session.carousel_dimension_issues_desktop = analyze_slide_dimensions(carousel_desktop)
-            session.carousel_dimension_issues_mobile = analyze_slide_dimensions(carousel_mobile)
-            session.nav_broken_links = nav_broken
-            session.nav_checked_links = nav_checked
-            session.nav_duplicate_links = nav_dupes
-            session.header_logo_check = check_header_logo(logo_info, base_url)
+            session.nav_duplicate_links = find_nav_duplicate_links(nav_links)
             session.social_media_broken = social_broken
             session.social_media_no_new_tab = social_no_new_tab
             session.social_media_checked = social_checked
 
             summary_parts = []
-            if carousel_broken:
-                summary_parts.append(f"{len(carousel_broken)} broken carousel link(s)")
-            if cta_broken:
-                summary_parts.append(f"{len(cta_broken)} broken CTA link(s)")
-            if nav_broken:
-                summary_parts.append(f"{len(nav_broken)} broken nav link(s)")
             if social_broken:
                 summary_parts.append(f"{len(social_broken)} broken social link(s)")
-            if session.carousel_dimension_issues_desktop:
-                summary_parts.append("carousel dimension inconsistencies found")
 
             msg = "Homepage checks complete" + (f": {', '.join(summary_parts)}" if summary_parts else " — all clear")
             await emit("progress", msg, {"status": "homepage_checks"})
@@ -1722,13 +1663,9 @@ class AuditOrchestrator:
         forms = capture.get("forms", [])
         buttons = capture.get("buttons", [])
         page_features = capture.get("page_features") or {}
-        phone_numbers = capture.get("phone_numbers") or []
         business_info = capture.get("business_info") or {}
         # Sprint 5 — per-page homepage data (passed through from content script)
-        carousel_data = capture.get("carousel_data") or []
-        cta_links_raw = capture.get("cta_links") or []
         nav_menu_data = capture.get("nav_menu_data") or []
-        header_logo_info = capture.get("header_logo_info") or {}
         social_links = capture.get("social_links") or []
         page_dates = capture.get("page_dates") or []
         screenshot_b64 = capture.get("screenshot_base64")
@@ -1809,12 +1746,8 @@ class AuditOrchestrator:
             forms=forms,
             buttons=buttons,
             page_features=page_features,
-            phone_numbers=phone_numbers,
             business_info=business_info,
-            carousel_data=carousel_data,
-            cta_links=cta_links_raw,
             nav_menu_data=nav_menu_data,
-            header_logo_info=header_logo_info,
             social_links=social_links,
             page_dates=page_dates,
         )
@@ -1920,14 +1853,6 @@ class AuditOrchestrator:
                             existing_hours.setdefault(day, val)
                         existing["hours"] = existing_hours
 
-            # Sprint 3: aggregate phone numbers (deduplicate by normalized 10-digit key)
-            known_phones = {self._normalize_phone(p["number"]) for p in session.phone_numbers_all}
-            for ph in desktop_result.phone_numbers:
-                norm = self._normalize_phone(ph.get("number", ""))
-                if norm and norm not in known_phones:
-                    known_phones.add(norm)
-                    session.phone_numbers_all.append({**ph, "source_page": page_url})
-
             # Sprint 5: aggregate expired dates (req 7 — scan nav pages for expired content)
             for date_entry in desktop_result.page_dates:
                 session.nav_expired_dates.append({**date_entry, "source_page": page_url})
@@ -1945,13 +1870,6 @@ class AuditOrchestrator:
                     "load_time_ms": mobile_result.load_time_ms,
                     "viewport": "mobile",
                 })
-
-    @staticmethod
-    def _normalize_phone(raw: str) -> str:
-        """Strip non-digits, return last 10 digits for deduplication."""
-        import re
-        digits = re.sub(r"\D", "", raw or "")
-        return digits[-10:] if len(digits) >= 10 else digits
 
     def _merge_dealership_features(
         self,

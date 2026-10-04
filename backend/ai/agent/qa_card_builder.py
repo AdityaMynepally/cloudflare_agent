@@ -124,76 +124,6 @@ def _evaluate_check(
         d_status = CheckStatus.PASS if desktop_results else CheckStatus.NA
         m_status = CheckStatus.PASS if mobile_results else CheckStatus.NA
 
-    elif check_id == "hp_cta_links":
-        # Sprint 5: use dedicated CTA broken link check first; fall back to general broken links
-        if session and session.cta_broken_links:
-            d_status = CheckStatus.FAIL
-            m_status = CheckStatus.FAIL
-            notes = f"{len(session.cta_broken_links)} CTA link(s) return 404"
-        elif _has_broken_links(desktop_results):
-            d_status = CheckStatus.FAIL
-            notes = "Broken CTA links found"
-        if not session or not session.cta_broken_links:
-            if _has_broken_links(mobile_results):
-                m_status = CheckStatus.FAIL
-
-    elif check_id == "hp_slides_same_size":
-        # Sprint 5: check dimension issues on desktop and mobile
-        if session:
-            if session.carousel_dimension_issues_desktop:
-                d_status = CheckStatus.FAIL
-                notes = f"{len(session.carousel_dimension_issues_desktop)} carousel(s) have inconsistent slide sizes (desktop)"
-            if session.carousel_dimension_issues_mobile:
-                m_status = CheckStatus.FAIL
-                notes += f" {len(session.carousel_dimension_issues_mobile)} carousel(s) have inconsistent slide sizes (mobile)"
-        else:
-            d_status = CheckStatus.PASS if desktop_results else CheckStatus.NA
-            m_status = CheckStatus.PASS if mobile_results else CheckStatus.NA
-
-    elif check_id == "hp_slides_linked":
-        # Sprint 5: relevance check
-        if session:
-            rel = session.carousel_link_relevance
-            irrelevant = [r for r in rel if r.get("relevant") is False]
-            undetermined = [r for r in rel if r.get("relevant") is None]
-            if irrelevant:
-                d_status = CheckStatus.FAIL
-                notes = f"{len(irrelevant)} slide link(s) may point to incorrect pages"
-            elif rel and undetermined and len(undetermined) / len(rel) >= 0.5:
-                # Most slides' topics couldn't be determined at all — that's
-                # an inconclusive result, not a verified pass; NA reflects
-                # "not confidently checked" instead of implying a clean bill
-                # of health nothing was actually confirmed to earn.
-                d_status = CheckStatus.NA
-                notes = f"Could not confirm relevance for {len(undetermined)} of {len(rel)} slides — manual review recommended"
-            elif rel:
-                d_status = CheckStatus.PASS
-        else:
-            d_status = CheckStatus.PASS if desktop_results else CheckStatus.NA
-
-    elif check_id == "hp_carousel_no_broken":
-        if session:
-            if session.carousel_broken_links:
-                d_status = CheckStatus.FAIL
-                notes = f"{len(session.carousel_broken_links)} carousel slide link(s) return 404"
-            else:
-                d_status = CheckStatus.PASS if desktop_results else CheckStatus.NA
-        else:
-            d_status = CheckStatus.PASS if desktop_results else CheckStatus.NA
-
-    elif check_id == "hp_content_images":
-        if session:
-            if session.homepage_broken_content_images:
-                d_status = CheckStatus.FAIL
-                notes = f"{len(session.homepage_broken_content_images)} non-carousel homepage image(s) broken"
-            else:
-                d_status = CheckStatus.PASS if desktop_results else CheckStatus.NA
-        else:
-            d_status = CheckStatus.PASS if desktop_results else CheckStatus.NA
-
-    elif check_id == "hp_slide_count":
-        d_status = CheckStatus.PASS if desktop_results else CheckStatus.NA
-
     elif check_id == "hp_floating_widgets":
         d_status = CheckStatus.PASS if desktop_results else CheckStatus.NA
         m_status = CheckStatus.PASS if mobile_results else CheckStatus.NA
@@ -240,37 +170,13 @@ def _evaluate_check(
         if _has_broken_links(all_mobile):
             m_status = CheckStatus.FAIL
 
-    elif check_id == "gc_logo_link":
-        if session and session.header_logo_check:
-            logo = session.header_logo_check
-            if logo.get("status") == "pass":
-                d_status = CheckStatus.PASS
-            else:
-                d_status = CheckStatus.FAIL
-                notes = logo.get("note", "Logo link issue detected")
-        else:
-            d_status = CheckStatus.PASS if all_desktop else CheckStatus.NA
-
     elif check_id == "gc_images_optimized":
         if _has_performance_issues(all_desktop):
             d_status = CheckStatus.FAIL
             notes = "Unoptimized images detected"
 
-    elif check_id == "gc_phone_numbers":
-        d_status = CheckStatus.PASS if all_desktop else CheckStatus.NA
-
     elif check_id == "gc_map_location":
         d_status = CheckStatus.PASS if all_desktop else CheckStatus.NA
-
-    elif check_id == "gc_nav_links":
-        if session and session.nav_broken_links:
-            d_status = CheckStatus.FAIL
-            m_status = CheckStatus.FAIL
-            notes = f"{len(session.nav_broken_links)} nav link(s) return 404"
-        elif _has_broken_links(all_desktop):
-            d_status = CheckStatus.FAIL
-        elif _has_broken_links(all_mobile):
-            m_status = CheckStatus.FAIL
 
     elif check_id == "gc_nav_no_dupes":
         if session and session.nav_duplicate_links:

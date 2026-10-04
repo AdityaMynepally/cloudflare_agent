@@ -438,173 +438,13 @@
   // ---- Images ----
 
   function getAllImages() {
-    const CAROUSEL_ANCESTORS = '.swiper-wrapper,.slick-list,.owl-stage,.owl-carousel,.carousel,[class*="carousel"],[class*="slider"],[class*="swiper"],.hero-slider,.banner-slider';
-    return Array.from(document.querySelectorAll('img')).map(img => {
-      const srcLower = (img.currentSrc || img.src || '').toLowerCase();
-      const altLower = (img.alt || '').toLowerCase();
-      const classLower = (img.className || '').toLowerCase();
-      const isLogo = srcLower.includes('logo') || altLower.includes('logo') || classLower.includes('logo') ||
-                     !!(img.closest('header,#header,.header') && (srcLower.includes('logo') || altLower.includes('logo') || classLower.includes('logo') || img.closest('a[class*="logo"],a[class*="brand"],.navbar-brand')));
-      const isInCarousel = !!img.closest(CAROUSEL_ANCESTORS);
-      return {
-        src: img.currentSrc || img.src || '',
-        alt: img.alt || '',
-        naturalWidth: img.naturalWidth || 0,
-        naturalHeight: img.naturalHeight || 0,
-        loading: img.loading || '',
-        is_logo: isLogo,
-        is_in_carousel: isInCarousel,
-      };
-    }).filter(img => img.src && !img.src.startsWith('data:') && !img.src.startsWith('blob:'));
-  }
-
-  // ---- Sprint 5: Carousel / Slideshow Data ----
-
-  function getCarouselData() {
-    const CAROUSEL_CONTAINERS = [
-      '.swiper-wrapper', '.slick-list', '.owl-stage', '.owl-carousel',
-      '.carousel', '[class*="carousel"]', '[class*="slider"]', '[class*="swiper"]',
-      '[data-ride="carousel"]', '[data-slick]', '.hero-slider', '.banner-slider',
-      '.homepage-slider', '.home-slider', '#home-slider', '#homepage-slider',
-    ];
-    const SLIDE_SELECTORS = [
-      '.swiper-slide:not(.swiper-slide-duplicate)',
-      '.slick-slide:not(.slick-cloned)',
-      '.owl-item:not(.cloned)',
-      '.carousel-item',
-      '[class*="slide-item"]',
-      '[class*="banner-item"]',
-      '.slide',
-    ];
-
-    // Widgets that structurally look like a carousel/slider but aren't a
-    // promotional slide carousel in the sense this check cares about — a
-    // customer-review/testimonial slider's "topic" is prose about someone's
-    // buying experience, not a page reference, and a "shop by model"
-    // availability strip's items are inventory counts, not slides that
-    // should link to a matching topic page. Neither can be meaningfully
-    // scored for slide/URL topic relevance, and sweeping them in is exactly
-    // what inflated one real site's "topic unclear" count into the
-    // hundreds — confirmed live: eleven separate widgets (including two
-    // overlapping detections of the SAME hero carousel, a review slider,
-    // and a per-model inventory-count strip) were all being folded into one
-    // page's promotional slide set.
-    const EXCLUDED_CONTAINER_RE = /\b(reviews?|testimonials?|ratings?)\b/i;
-    function looksLikeInventoryCountStrip(slides) {
-      if (slides.length < 2) return false;
-      const countLike = slides.filter(s => /\b\d+\s+available\b/i.test(s.slide_text || '')).length;
-      return countLike / slides.length >= 0.5;
-    }
-
-    const seen = new Set();
-    // Accepted carousel container elements, for containment-based dedup —
-    // separate from `seen`, which only catches the exact same element
-    // matching two different selector strings, not a DIFFERENT (parent or
-    // child) element that structurally wraps/is-wrapped-by one already
-    // accepted (e.g. an outer "[class*='carousel']" wrapper around an inner
-    // ".slick-list" — same visual carousel, two container matches).
-    const acceptedContainers = [];
-    const carousels = [];
-
-    for (const contSel of CAROUSEL_CONTAINERS) {
-      try {
-        for (const container of document.querySelectorAll(contSel)) {
-          if (seen.has(container)) continue;
-          seen.add(container);
-
-          if (acceptedContainers.some((acc) => acc === container || acc.contains(container) || container.contains(acc))) continue;
-
-          // The identifying class/id (e.g. "dv-reviews-carousel") commonly
-          // lives on an outer wrapper a couple of levels above the actual
-          // slide-list element matched here (confirmed live: a reviews
-          // widget's own ".swiper-wrapper" has a generic class with no
-          // "review" in it at all — only its grandparent does), so this has
-          // to walk up, not just check the matched element itself.
-          let excluded = false;
-          let node = container;
-          for (let hops = 0; node && hops < 5; hops++) {
-            const idc = ((node.id || '') + ' ' + (typeof node.className === 'string' ? node.className : '')).toLowerCase();
-            if (EXCLUDED_CONTAINER_RE.test(idc)) { excluded = true; break; }
-            node = node.parentElement;
-          }
-          if (excluded) continue;
-
-          let slides = [];
-          for (const slideSel of SLIDE_SELECTORS) {
-            const slideEls = container.querySelectorAll(slideSel);
-            if (slideEls.length >= 2) {
-              for (const slide of slideEls) {
-                const rect = slide.getBoundingClientRect();
-                if (rect.width < 10 && rect.height < 10) continue;
-                const linkEl = slide.tagName === 'A' ? slide : slide.querySelector('a[href]');
-                slides.push({
-                  href: linkEl ? linkEl.href : null,
-                  link_text: linkEl ? (linkEl.getAttribute('aria-label') || linkEl.textContent || '').trim().substring(0, 200) : null,
-                  slide_text: slide.textContent.trim().replace(/\s+/g, ' ').substring(0, 300),
-                  width: Math.round(rect.width),
-                  height: Math.round(rect.height),
-                });
-              }
-              if (slides.length > 0) break;
-            }
-          }
-
-          // Fallback: direct children with significant size
-          if (slides.length < 2) {
-            slides = [];
-            for (const child of container.children) {
-              const rect = child.getBoundingClientRect();
-              if (rect.width < 100 || rect.height < 50) continue;
-              const linkEl = child.tagName === 'A' ? child : child.querySelector('a[href]');
-              slides.push({
-                href: linkEl ? linkEl.href : null,
-                link_text: linkEl ? (linkEl.getAttribute('aria-label') || linkEl.textContent || '').trim().substring(0, 200) : null,
-                slide_text: child.textContent.trim().replace(/\s+/g, ' ').substring(0, 300),
-                width: Math.round(rect.width),
-                height: Math.round(rect.height),
-              });
-            }
-          }
-
-          if (slides.length >= 2 && !looksLikeInventoryCountStrip(slides)) {
-            carousels.push({ selector: contSel, slides: slides.slice(0, 20) });
-            acceptedContainers.push(container);
-          }
-        }
-      } catch (_) {}
-    }
-    return carousels;
-  }
-
-  // ---- Sprint 5: CTA Buttons / Banners ----
-
-  function getCTALinks() {
-    const CTA_SELECTORS = [
-      'a.btn', 'a.button', 'a[class*="cta"]', 'a[class*="btn-primary"]',
-      'a[class*="btn-cta"]', '.hero a[href]', '.banner a[href]',
-      '[class*="hero"] a[href]', '[class*="banner"] a[href]',
-      '.cta-section a[href]', '[class*="cta"] a[href]',
-      'a[class*="call-to-action"]', '.offer a[href]', '[class*="offer"] a[href]',
-    ];
-
-    const seen = new Set();
-    const ctas = [];
-
-    for (const sel of CTA_SELECTORS) {
-      try {
-        for (const el of document.querySelectorAll(sel)) {
-          const href = el.href || '';
-          if (!href || href.startsWith('javascript:') || href.startsWith('mailto:') || href.startsWith('tel:')) continue;
-          if (seen.has(href)) continue;
-          seen.add(href);
-          ctas.push({
-            href,
-            text: (el.getAttribute('aria-label') || el.textContent || '').trim().substring(0, 100),
-          });
-        }
-      } catch (_) {}
-    }
-    return ctas;
+    return Array.from(document.querySelectorAll('img')).map(img => ({
+      src: img.currentSrc || img.src || '',
+      alt: img.alt || '',
+      naturalWidth: img.naturalWidth || 0,
+      naturalHeight: img.naturalHeight || 0,
+      loading: img.loading || '',
+    })).filter(img => img.src && !img.src.startsWith('data:') && !img.src.startsWith('blob:'));
   }
 
   // ---- Sprint 5: Primary Navigation Menu ----
@@ -746,60 +586,6 @@
       allLinks.push(entry);
     }
     return allLinks.slice(0, 80);
-  }
-
-  // ---- Sprint 5: Header Logo Check ----
-
-  function getHeaderLogoInfo() {
-    const result = { has_link: false, href: null, links_to_homepage: false };
-
-    // Tier 1: specific, low-ambiguity signals — either the anchor itself is
-    // literally the homepage link, or it matches a narrow/well-known logo
-    // pattern. Tried first and preferred whenever any of them match.
-    const LOGO_SELECTORS_STRONG = [
-      'header a[href="/"]',
-      '.site-logo a', '#logo a', '.navbar-brand', '[class*="navbar-brand"] a',
-      'header a[class*="logo"]', '#header a[class*="logo"]', '.header a[class*="logo"]',
-      'header img[class*="logo"]', 'a[href="/"] img',
-    ];
-    // Tier 2: broader, higher-risk fallbacks — only tried if nothing above
-    // matched. "header [class*='logo'] a" matches ANY anchor nested inside
-    // ANY container that happens to have "logo" in its class, which on real
-    // sites has matched unrelated third-party widget badges (a manufacturer
-    // "Car Care" promo, a trade-in-tool badge) sitting in a logo-classed
-    // wrapper alongside the real logo — confirmed on two separate sites,
-    // both times stealing the match before the real (Tier 1) homepage link
-    // was ever reached. Fully unscoped selectors are riskier still.
-    const LOGO_SELECTORS_FALLBACK = [
-      'header [class*="logo"] a', 'header .logo a',
-      'a[class*="logo"]', '[class*="brand"] a',
-    ];
-
-    const origin = window.location.origin;
-
-    function tryFind(selectors) {
-      for (const sel of selectors) {
-        try {
-          const el = document.querySelector(sel);
-          if (!el) continue;
-          const anchor = el.tagName === 'A' ? el : (el.closest('a') || el.querySelector('a'));
-          if (anchor && anchor.href) return anchor.href;
-        } catch (_) {}
-      }
-      return null;
-    }
-
-    const href = tryFind(LOGO_SELECTORS_STRONG) || tryFind(LOGO_SELECTORS_FALLBACK);
-    if (href) {
-      result.has_link = true;
-      result.href = href;
-      try {
-        const u = new URL(href);
-        const path = u.pathname.replace(/\/$/, '') || '/';
-        result.links_to_homepage = u.origin === origin && (path === '/' || path === '');
-      } catch {}
-    }
-    return result;
   }
 
   // ---- Sprint 5: Social Media Links ----
@@ -1428,91 +1214,6 @@
     return `${fmt(open)} - ${fmt(close)}`;
   }
 
-  // ---- Sprint 3: Phone Number Collection ----
-
-  function getPhoneNumbers() {
-    const phones = [];
-    const seen = new Set(); // keyed on normalized 10-digit number
-
-    function normalize(raw) {
-      const digits = raw.replace(/\D/g, '');
-      return digits.length >= 10 ? digits.slice(-10) : digits;
-    }
-
-    // Reject placeholder/fake numbers: all same digit (9999999999, 0000000000, etc.)
-    // or known dummy values like 1234567890
-    function isValidPhone(norm) {
-      if (!norm || norm.length < 10) return false;
-      if (/^(\d)\1{9}$/.test(norm)) return false;  // all same digit
-      if (norm === '1234567890') return false;
-      return true;
-    }
-
-    // Determine department from surrounding context text
-    function getDepartment(contextText) {
-      const DEPT_MAP = [
-        { dept: 'Sales',   kw: ['sales', 'new car', 'used car', 'new vehicle', 'used vehicle', 'buy a car', 'shop vehicles'] },
-        { dept: 'Service', kw: ['service', 'repair', 'maintenance', 'body shop', 'collision', 'schedule service'] },
-        { dept: 'Parts',   kw: ['parts', 'accessories', 'parts dept', 'order parts'] },
-        { dept: 'Finance', kw: ['finance', 'financing', 'credit', 'loan', 'payment'] },
-      ];
-      const t = contextText.toLowerCase();
-      for (const { dept, kw } of DEPT_MAP) {
-        if (kw.some(k => t.includes(k))) return dept;
-      }
-      return 'Main';
-    }
-
-    // Walk up the DOM to gather department context
-    function getContext(el) {
-      if (!el) return '';
-      let ctx = ((el.textContent || '') + ' ' +
-                 (el.getAttribute('aria-label') || '') + ' ' +
-                 (el.getAttribute('title') || '')).substring(0, 200);
-      let node = el;
-      for (let i = 0; i < 5 && node.parentElement; i++) {
-        node = node.parentElement;
-        const heading = node.querySelector('h1,h2,h3,h4,h5,h6,label,[class*="title"],[class*="dept"],[class*="heading"]');
-        if (heading) ctx += ' ' + heading.textContent.substring(0, 100);
-      }
-      return ctx;
-    }
-
-    // 1. tel: links — most reliable (already formatted, clearly labeled)
-    for (const link of document.querySelectorAll('a[href^="tel:"]')) {
-      const raw = link.href.replace(/^tel:/, '').replace(/\s/g, '');
-      const norm = normalize(raw);
-      if (!isValidPhone(norm) || seen.has(norm)) continue;
-      seen.add(norm);
-      const ctx   = getContext(link);
-      const dept  = getDepartment(ctx);
-      const display = (link.textContent.trim() || raw).substring(0, 30);
-      phones.push({ number: raw, display, department: dept });
-    }
-
-    // 2. Text-node regex scan for any numbers not already captured via tel: links
-    const PHONE_RE = /(?:\+1[\s.\-]?)?(?:\(?\d{3}\)?[\s.\-]\d{3}[\s.\-]\d{4})/g;
-    try {
-      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-      let tnode;
-      while ((tnode = walker.nextNode())) {
-        const text = tnode.textContent || '';
-        let m;
-        PHONE_RE.lastIndex = 0;
-        while ((m = PHONE_RE.exec(text)) !== null) {
-          const norm = normalize(m[0]);
-          if (!isValidPhone(norm) || seen.has(norm)) continue;
-          seen.add(norm);
-          const ctx  = getContext(tnode.parentElement);
-          const dept = getDepartment(ctx);
-          phones.push({ number: m[0].trim(), display: m[0].trim(), department: dept });
-        }
-      }
-    } catch (_) {}
-
-    return phones.slice(0, 40);
-  }
-
   // ---- Sprint 2: Dealership Feature Detection ----
 
   function getPageFeatures() {
@@ -1935,13 +1636,9 @@
       axe_results: axeResults,
       js_errors: jsErrors,
       page_features: getPageFeatures(),
-      phone_numbers: getPhoneNumbers(),
       business_info: getBusinessInfo(),
       // Sprint 5 — homepage & site-wide checks
-      carousel_data: getCarouselData(),
-      cta_links: getCTALinks(),
       nav_menu_data: getNavMenuData(),
-      header_logo_info: getHeaderLogoInfo(),
       social_links: getSocialMediaLinks(),
       page_dates: getExpiredDates(),
       // Sprint 6 — inventory checks
