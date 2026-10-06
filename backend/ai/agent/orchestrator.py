@@ -53,6 +53,15 @@ from ai.analysis.homepage import (
     find_nav_duplicate_links,
     check_social_media_links,
 )
+from ai.analysis.crawler_access import check_robots_txt, check_llms_txt
+from ai.analysis.crawler_visibility import check_crawler_visibility
+from ai.analysis.vendors import aggregate_vendor_costs
+from ai.analysis.templates import parse_sitemap_xml, group_by_template, sample_by_template
+from ai.analysis.structured_data import (
+    parse_json_ld_blocks,
+    audit_business_structured_data,
+    audit_vehicle_structured_data,
+)
 from ai.analysis.summarizer import summarize_page, summarize_site, generate_recommendations
 from scoring.calculator import calculate_page_scores, calculate_site_score, score_to_grade
 
@@ -300,6 +309,21 @@ class AuditOrchestrator:
             _mobile_cap_for_hp = mobile_capture if not mobile_capture.get("error") else {}
             await self._run_homepage_checks(session, discover_result, _mobile_cap_for_hp, emit)
 
+            # ---- Phase 2.2: SITEMAP-BASED TEMPLATE SAMPLING (Sprint 11) ----
+            # Runs after robots.txt is known (session.robots_txt_check) so
+            # its declared sitemaps are available. Extra pages are spliced
+            # into the existing per-page loop below, reusing its full
+            # desktop+mobile audit pipeline rather than a separate one.
+            extra_urls = await self._run_sitemap_discovery_phase(
+                bridge, session, emit, exclude=set(urls_to_audit)
+            )
+            if extra_urls:
+                remaining_capacity = max(self.max_pages - len(urls_to_audit), 0)
+                extra_urls = extra_urls[:remaining_capacity]
+                urls_to_audit.extend(extra_urls)
+                session.discovered_urls = urls_to_audit
+                total = len(urls_to_audit)
+
             # Remaining pages: desktop + mobile for each
             for idx, page_url in enumerate(urls_to_audit[1:], start=2):
                 # Desktop pass
@@ -423,6 +447,13 @@ class AuditOrchestrator:
             session.overall_score = calculate_site_score(session.pages)
             session.overall_grade = score_to_grade(session.overall_score)
 
+            # Sprint 9: business-identity structured-data audit, built once
+            # across every page's accumulated JSON-LD (the record can live
+            # on any page, not only the homepage).
+            session.structured_data_business_check = audit_business_structured_data(
+                session.structured_data_pages
+            )
+
             # Build QA card
             session.qa_card = build_qa_card(
                 target_url=target_url,
@@ -490,6 +521,12 @@ class AuditOrchestrator:
                 "social_media_broken_count": len(session.social_media_broken),
                 "social_media_no_new_tab_count": len(session.social_media_no_new_tab),
                 "nav_expired_dates_count": len(session.nav_expired_dates),
+                # Sprint 9: crawler access, visibility, structured data
+                "robots_txt_check": session.robots_txt_check,
+                "llms_txt_check": session.llms_txt_check,
+                "crawler_visibility_check": session.crawler_visibility_check,
+                "structured_data_business_check": session.structured_data_business_check,
+                "vehicle_structured_data_check": session.vehicle_structured_data_check,
                 "avg_load_time_ms": (
                     round(sum(t["load_time_ms"] for t in session.page_load_times if t.get("viewport") == "desktop") /
                           max(len([t for t in session.page_load_times if t.get("viewport") == "desktop"]), 1), 0)
@@ -1245,6 +1282,17 @@ class AuditOrchestrator:
             vdp_img_resources = (vdp_capture.get("performance_data") or {}).get("imageResources", [])
             vdp_data          = vdp_capture.get("inventory_data") or {}
 
+            # Sprint 9: Vehicle/Product structured-data completeness —
+            # VDP-only, since a template-specific finding must never be
+            # generalised from a page that isn't actually a VDP. Mileage is
+            # only an expected field for used/CPO vehicles — a new vehicle
+            # legitimately has none, so it must not be flagged as missing.
+            vdp_structured_data = parse_json_ld_blocks(vdp_capture.get("structured_data") or [])
+            session.vehicle_structured_data_check = audit_vehicle_structured_data(
+                vdp_structured_data,
+                is_used=session.vdp_page_type in ("used", "cpo", "mixed"),
+            )
+
             # VDP link + image checks concurrently
             vdp_link_task = asyncio.create_task(
                 check_inventory_graphic_links(vdp_links, vdp_graphic_links, vehicle_url)
@@ -1546,23 +1594,133 @@ class AuditOrchestrator:
 
             nav_links = desktop_capture.get("nav_menu_data") or []
             social_links = desktop_capture.get("social_links") or []
+            base_url = session.target_url
+            dom_content = desktop_capture.get("dom_content") or ""
+            # Extension-fetched versions (same-tab fetch() — see
+            # crawler_access.py / crawler_visibility.py docstrings for why
+            # these are preferred over a direct backend request).
+            crawler_files = desktop_capture.get("crawler_files") or {}
 
-            social_broken, social_no_new_tab, social_checked = await check_social_media_links(social_links)
+            (
+                social_result,
+                robots_result,
+                llms_result,
+                visibility_result,
+            ) = await asyncio.gather(
+                check_social_media_links(social_links),
+                check_robots_txt(base_url, crawler_files.get("robots_txt")),
+                check_llms_txt(base_url, crawler_files.get("llms_txt")),
+                check_crawler_visibility(base_url, dom_content, crawler_files.get("raw_html")),
+            )
+            social_broken, social_no_new_tab, social_checked = social_result
+
+            # Sprint 10: named third-party vendor cost attribution — pure,
+            # no I/O, from Resource Timing data already captured.
+            script_resources = (desktop_capture.get("performance_data") or {}).get("scriptResources") or []
+            first_party_host = urlparse(base_url).hostname or ""
+            session.vendor_cost_report = aggregate_vendor_costs(script_resources, first_party_host)
 
             session.nav_duplicate_links = find_nav_duplicate_links(nav_links)
             session.social_media_broken = social_broken
             session.social_media_no_new_tab = social_no_new_tab
             session.social_media_checked = social_checked
+            session.robots_txt_check = robots_result
+            session.llms_txt_check = llms_result
+            session.crawler_visibility_check = visibility_result
 
             summary_parts = []
             if social_broken:
                 summary_parts.append(f"{len(social_broken)} broken social link(s)")
+            if robots_result.get("ai_crawlers_fully_blocked"):
+                summary_parts.append(
+                    f"{len(robots_result['ai_crawlers_fully_blocked'])} AI crawler(s) blocked by robots.txt"
+                )
 
             msg = "Homepage checks complete" + (f": {', '.join(summary_parts)}" if summary_parts else " — all clear")
             await emit("progress", msg, {"status": "homepage_checks"})
 
         except Exception as e:
             logger.warning(f"Homepage checks error (non-fatal): {e}", exc_info=True)
+
+    # Caps bounding how much sitemap discovery work one audit run can
+    # trigger — a large dealer-group sitemap index can otherwise expand
+    # into thousands of sub-sitemap fetches / URLs.
+    SITEMAP_MAX_TOP_LEVEL = 3
+    SITEMAP_MAX_SUB_SITEMAPS = 5
+    SITEMAP_MAX_URLS_PARSED = 3000
+    SITEMAP_SAMPLE_PER_TEMPLATE = 2
+    SITEMAP_SAMPLE_MAX_TOTAL = 6
+
+    async def _run_sitemap_discovery_phase(
+        self,
+        bridge: ExtensionBridge,
+        session: AuditSession,
+        emit,
+        exclude: set[str],
+    ) -> list[str]:
+        """Sprint 11 — discover the site's sitemap-declared URL inventory,
+        classify it into page templates, and sample a few extra pages
+        SPREAD across each template (FR-25/26/27) for the main audit loop
+        to actually visit. Returns the extra URLs to audit.
+
+        Sitemaps are fetched via the extension (same reasoning as
+        robots.txt/llms.txt — see crawler_access.py) rather than a direct
+        backend request.
+        """
+        try:
+            sitemap_urls = ((session.robots_txt_check or {}).get("sitemaps") or [])[:self.SITEMAP_MAX_TOP_LEVEL]
+            if not sitemap_urls:
+                return []
+
+            await emit("progress", f"Discovering pages via {len(sitemap_urls)} sitemap(s)...", {"status": "discovering"})
+
+            top_level = await bridge.send_and_wait({"type": "fetch_urls", "urls": sitemap_urls})
+            fetched = top_level.get("fetched") or []
+
+            all_urls: list[str] = []
+            sub_sitemaps: list[str] = []
+            for entry in fetched:
+                if entry.get("status") == 200 and entry.get("text"):
+                    parsed = parse_sitemap_xml(entry["text"])
+                    all_urls.extend(parsed["urls"])
+                    sub_sitemaps.extend(parsed["sub_sitemaps"])
+
+            # One level of sitemap-index recursion (FR-25), capped.
+            if sub_sitemaps:
+                sub_sitemaps = sub_sitemaps[:self.SITEMAP_MAX_SUB_SITEMAPS]
+                sub_result = await bridge.send_and_wait({"type": "fetch_urls", "urls": sub_sitemaps})
+                for entry in (sub_result.get("fetched") or []):
+                    if entry.get("status") == 200 and entry.get("text"):
+                        parsed = parse_sitemap_xml(entry["text"])
+                        all_urls.extend(parsed["urls"])
+
+            if not all_urls:
+                return []
+
+            all_urls = all_urls[:self.SITEMAP_MAX_URLS_PARSED]
+            groups = group_by_template(all_urls)
+
+            # Report the classifier's own distribution on every run (FR-26)
+            # — this is what catches a classification rule silently
+            # mislabeling an entire template.
+            session.sitemap_template_distribution = {k: len(v) for k, v in groups.items()}
+
+            sampled = sample_by_template(
+                groups, exclude=exclude,
+                per_group=self.SITEMAP_SAMPLE_PER_TEMPLATE,
+                max_total=self.SITEMAP_SAMPLE_MAX_TOTAL,
+            )
+            session.sitemap_sampled_pages = sampled
+
+            if sampled:
+                by_template = ", ".join(f"{s['template']}" for s in sampled)
+                await emit("progress", f"Sitemap inventory: {len(all_urls)} URL(s) across {len(groups)} template(s) — sampling {len(sampled)} extra page(s) ({by_template})", {"status": "discovering"})
+
+            return [s["url"] for s in sampled]
+
+        except Exception as e:
+            logger.warning(f"Sitemap discovery error (non-fatal): {e}", exc_info=True)
+            return []
 
     async def _run_gbp_phase(self, session: AuditSession, emit) -> None:
         """Query Google Business Profile and compare address + hours."""
@@ -1668,6 +1826,8 @@ class AuditOrchestrator:
         nav_menu_data = capture.get("nav_menu_data") or []
         social_links = capture.get("social_links") or []
         page_dates = capture.get("page_dates") or []
+        # Sprint 9 — JSON-LD structured data, parsed once here (pure, no I/O)
+        structured_data = parse_json_ld_blocks(capture.get("structured_data") or [])
         screenshot_b64 = capture.get("screenshot_base64")
         if not screenshot_b64 and capture.get("screenshot_error"):
             logger.warning(f"Screenshot capture failed for {url} ({viewport.value}): {capture['screenshot_error']}")
@@ -1750,6 +1910,7 @@ class AuditOrchestrator:
             nav_menu_data=nav_menu_data,
             social_links=social_links,
             page_dates=page_dates,
+            structured_data=structured_data,
         )
 
         return result
@@ -1856,6 +2017,16 @@ class AuditOrchestrator:
             # Sprint 5: aggregate expired dates (req 7 — scan nav pages for expired content)
             for date_entry in desktop_result.page_dates:
                 session.nav_expired_dates.append({**date_entry, "source_page": page_url})
+
+            # Sprint 9: accumulate JSON-LD objects per page for the business
+            # structured-data audit, built once across all pages at the end
+            # (the business record can legitimately live on any page, not
+            # only the homepage).
+            if desktop_result.structured_data:
+                session.structured_data_pages.append({
+                    "source_page": page_url,
+                    "objects": desktop_result.structured_data,
+                })
 
         if mobile_result and not mobile_result.error:
             # JS errors from mobile

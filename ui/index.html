@@ -762,6 +762,22 @@
     .hpc-url-table td.url-cell     { width: 99%; color: #777; }
     .hpc-url-table tr:last-child td { border-bottom: none; }
     .hpc-url-table tr:hover td { background: #161616; color: #bbb; }
+
+    /* Full-width group variant — for a single wide card (e.g. the vendor
+       cost table) that shouldn't be squeezed into the 2-column hpc-grid. */
+    .hpc-grid-full { display: block; }
+
+    /* Vendor cost table — its own sizing, deliberately not sharing
+       .hpc-url-table's fixed pixel widths (those are tuned for a status
+       dot + 3-digit code + URL, not a vendor name + policy word). */
+    .vendor-cost-table-wrap { overflow-x: auto; margin-top: 6px; }
+    .vendor-cost-table { width: 100%; border-collapse: collapse; font-size: 0.74rem; white-space: nowrap; }
+    .vendor-cost-table th, .vendor-cost-table td { padding: 5px 10px; border-bottom: 1px solid #1c1c1c; text-align: left; }
+    .vendor-cost-table th { color: var(--gray); font-weight: 600; text-transform: uppercase; font-size: 0.65rem; letter-spacing: 0.04em; }
+    .vendor-cost-table td { color: #999; }
+    .vendor-cost-table td:first-child { color: #ddd; }
+    .vendor-cost-table tr:last-child td { border-bottom: none; }
+    .vendor-cost-table tr:hover td { background: #161616; color: #bbb; }
     .status-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
     .status-dot.ok   { background: var(--green); }
     .status-dot.err  { background: var(--red); }
@@ -1669,8 +1685,19 @@
     const socialBroken     = full.social_media_broken          || [];
     const socialNoTab      = full.social_media_no_new_tab      || [];
     const socialChecked    = full.social_media_checked         || [];
+    const robotsCheck      = full.robots_txt_check              || null;
+    const llmsCheck        = full.llms_txt_check                || null;
+    const visibilityCheck  = full.crawler_visibility_check      || null;
+    const bizStructured    = full.structured_data_business_check || null;
+    const vehStructured    = full.vehicle_structured_data_check  || null;
+    const vendorReport     = full.vendor_cost_report             || null;
+    const sitemapDist      = full.sitemap_template_distribution  || {};
+    const sitemapSampled   = full.sitemap_sampled_pages          || [];
 
-    const hasAnyData = socialChecked.length || navExpired.length || navDupes.length;
+    const hasAnyData = socialChecked.length || navExpired.length || navDupes.length ||
+      robotsCheck || llmsCheck || visibilityCheck || bizStructured || vehStructured ||
+      (vendorReport && vendorReport.vendors && vendorReport.vendors.length) ||
+      Object.keys(sitemapDist).length;
     if (!hasAnyData) return;
 
     // ---- helpers ----
@@ -1711,6 +1738,45 @@
           <summary>Checked ${rows.length} URL${rows.length !== 1 ? 's' : ''}</summary>
           <table class="hpc-url-table"><tbody>${rowsHtml}</tbody></table>
         </details>`;
+    }
+
+    // Collapsible raw-text viewer for robots.txt / llms.txt
+    function rawTextAccordion(text, label) {
+      if (!text) return '';
+      return `
+        <details class="hpc-checked">
+          <summary>View raw ${escHtml(label)}</summary>
+          <pre style="white-space:pre-wrap;word-break:break-word;max-height:300px;overflow:auto;background:#111;border:1px solid var(--border);border-radius:6px;padding:10px;font-size:0.72rem;color:#ccc;margin-top:6px;">${escHtml(text)}</pre>
+        </details>`;
+    }
+
+    // Vendor cost table — one row per identified third-party vendor
+    function vendorTable(vendors) {
+      if (!vendors.length) return '';
+      const rows = vendors.slice(0, 15).map(v => {
+        const kb = Math.round((v.total_bytes || 0) / 1024);
+        const policy = v.policy || {};
+        const policyLabel = policy.defer === false ? 'never defer'
+          : policy.defer === 'unknown' ? 'unknown'
+          : policy.defer === 'consolidate' ? 'consolidate'
+          : 'deferrable';
+        const policyCls = policy.defer === false ? 'err' : policy.defer === 'unknown' ? 'warn' : 'info';
+        return `<tr>
+          <td>${escHtml(v.owner)}</td>
+          <td><span class="hpc-badge ${policyCls}">${escHtml(policyLabel)}</span></td>
+          <td>${v.script_count}</td>
+          <td>${kb} KB</td>
+          <td>${Math.round(v.total_duration_ms || 0)} ms</td>
+          <td>${v.render_blocking_count || 0}</td>
+        </tr>`;
+      }).join('');
+      return `
+        <div class="vendor-cost-table-wrap">
+          <table class="vendor-cost-table">
+            <thead><tr><th>Vendor</th><th>Policy</th><th>Scripts</th><th>Size</th><th>Load Time</th><th>Blocking</th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>`;
     }
 
     let html = '';
@@ -1763,6 +1829,127 @@
     }
 
     html += `</div>`;
+
+    // ---- Group 3: AEO / AI Crawler Readiness ----
+    html += `<div class="hpc-group-label">AEO / AI Crawler Readiness</div><div class="hpc-grid">`;
+
+    // robots.txt — AI crawler blocking
+    if (robotsCheck) {
+      if (robotsCheck.status === 'present') {
+        const blocked = robotsCheck.ai_crawlers_fully_blocked || [];
+        const st = blocked.length ? 'fail' : 'pass';
+        const note = blocked.length
+          ? `${blocked.length} AI crawler(s) fully blocked: ${blocked.join(', ')}`
+          : 'No AI crawler is fully blocked by robots.txt';
+        const items = Object.entries(robotsCheck.ai_crawler_rules || {}).map(([agent, paths]) =>
+          `<li><span class="hpc-badge ${paths.includes('/') ? 'err' : 'info'}">${escHtml(agent)}</span>${paths.length ? escHtml(paths.join(', ')) : 'no disallow rules'}</li>`
+        );
+        html += card(st, 'robots.txt — AI Crawlers', note,
+          itemList(items) + rawTextAccordion(robotsCheck.raw_text, 'robots.txt'));
+      } else if (robotsCheck.status === 'absent') {
+        html += card('warn', 'robots.txt — AI Crawlers', 'No robots.txt found — crawlers default to full access', '');
+      } else {
+        html += card('na', 'robots.txt — AI Crawlers', 'Could not be fetched (blocked or rate-limited) — not established', '');
+      }
+    }
+
+    // llms.txt — AI-guidance file
+    if (llmsCheck) {
+      if (llmsCheck.status === 'present') {
+        html += card('pass', 'llms.txt (AI Guidance File)',
+          `Present — ${llmsCheck.size_bytes || 0} bytes`,
+          rawTextAccordion(llmsCheck.raw_text, 'llms.txt'));
+      } else if (llmsCheck.status === 'absent') {
+        html += card('warn', 'llms.txt (AI Guidance File)', 'Not found on this site', '');
+      } else {
+        html += card('na', 'llms.txt (AI Guidance File)', 'Could not be fetched (blocked or rate-limited) — not established', '');
+      }
+    }
+
+    // Raw-vs-rendered crawler visibility gap
+    if (visibilityCheck) {
+      if (visibilityCheck.status === 'measured') {
+        const pct = Math.round((visibilityCheck.crawler_visible_share || 0) * 100);
+        const st = visibilityCheck.band === 'poor' ? 'fail' : visibilityCheck.band === 'partial' ? 'warn' : 'pass';
+        html += card(st, 'Crawler-Visible Content (Raw vs Rendered)',
+          `Non-JS crawlers (GPTBot, ClaudeBot, PerplexityBot) see ~${pct}% of rendered text`,
+          `<div class="hpc-note" style="margin-top:2px;"><small>${visibilityCheck.raw_chars} raw chars / ${visibilityCheck.rendered_chars} rendered chars</small></div>`);
+      } else {
+        html += card('na', 'Crawler-Visible Content (Raw vs Rendered)',
+          escHtml(visibilityCheck.note || 'Not established'), '');
+      }
+    }
+
+    // Business structured-data contradictions
+    if (bizStructured) {
+      if (bizStructured.status === 'measured') {
+        const contradictions = bizStructured.contradictions || [];
+        const distinctBiz = bizStructured.distinct_business_count || 1;
+        const multiRooftop = distinctBiz > 1 ? ` across ${distinctBiz} distinct business identities on this site` : '';
+        const st = contradictions.length ? 'fail' : 'pass';
+        const note = contradictions.length
+          ? `${contradictions.length} contradicting field(s) within ${bizStructured.record_count} business record(s)${multiRooftop}`
+          : `${bizStructured.record_count} business record(s) found${multiRooftop}, no contradictions`;
+        const items = contradictions.map(c =>
+          `<li><span class="hpc-badge err">${escHtml(c.field)}</span>${escHtml(c.business_name || '')}: ${c.distinct_values.map(escHtml).join(' vs ')}</li>`
+        );
+        html += card(st, 'Business Structured Data (JSON-LD)', note, itemList(items));
+      } else {
+        html += card('na', 'Business Structured Data (JSON-LD)', 'No business-identity structured data found', '');
+      }
+    }
+
+    // Vehicle structured-data completeness (VDP)
+    if (vehStructured) {
+      if (vehStructured.status === 'measured') {
+        const st = vehStructured.complete ? 'pass' : 'warn';
+        const note = vehStructured.complete
+          ? 'Vehicle schema is complete'
+          : `Missing: ${(vehStructured.missing_fields || []).join(', ')}`;
+        html += card(st, 'Vehicle Structured Data (VDP)', note, '');
+      } else {
+        html += card('na', 'Vehicle Structured Data (VDP)', 'No Vehicle/Product structured data found on the VDP', '');
+      }
+    }
+
+    html += `</div>`;
+
+    // ---- Group 4: Third-Party Vendor Cost ----
+    if (vendorReport && (vendorReport.vendors || []).length) {
+      html += `<div class="hpc-group-label">Third-Party Vendor Cost</div><div class="hpc-grid-full">`;
+
+      const vendors = vendorReport.vendors || [];
+      const blockingNeverDefer = vendors.filter(v => v.policy && v.policy.defer === false && v.render_blocking_count > 0);
+      const st = blockingNeverDefer.length ? 'fail' : (vendorReport.unidentified_count ? 'warn' : 'pass');
+      const parts = [`${vendors.length} third-party vendor(s) identified`];
+      if (vendorReport.unidentified_count) parts.push(`${vendorReport.unidentified_count} unidentified host(s)`);
+      if (blockingNeverDefer.length) parts.push(`${blockingNeverDefer.length} never-defer vendor(s) are render-blocking`);
+
+      html += card(st, 'Third-Party Script Cost by Vendor', parts.join(' · '), vendorTable(vendors));
+      html += `</div>`;
+    }
+
+    // ---- Group 5: Site Coverage (Sitemap) ----
+    if (Object.keys(sitemapDist).length) {
+      html += `<div class="hpc-group-label">Site Coverage (Sitemap)</div><div class="hpc-grid">`;
+
+      const totalUrls = Object.values(sitemapDist).reduce((s, n) => s + n, 0);
+      const distItems = Object.entries(sitemapDist)
+        .sort((a, b) => b[1] - a[1])
+        .map(([kind, count]) => `<li><span class="hpc-badge info">${escHtml(kind)}</span>${count} URL(s)</li>`);
+      html += card('pass', 'Sitemap Template Distribution',
+        `${totalUrls} URL(s) across ${Object.keys(sitemapDist).length} template(s)`, itemList(distItems));
+
+      if (sitemapSampled.length) {
+        const sampleItems = sitemapSampled.map(s =>
+          `<li><span class="hpc-badge info">${escHtml(s.template)}</span><a href="${escHtml(s.url)}" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:underline;text-decoration-color:#444">${escHtml(truncUrl(s.url))}</a></li>`
+        );
+        html += card('pass', 'Extra Pages Sampled for Audit',
+          `${sitemapSampled.length} page(s) added from the sitemap, spread across templates`, itemList(sampleItems));
+      }
+
+      html += `</div>`;
+    }
 
     document.getElementById('hp-checks-body').innerHTML = html;
     document.getElementById('hp-checks-section').style.display = 'block';

@@ -122,6 +122,25 @@
       perf.imageResources = byType.image
         .filter(img => img.url)
         .map(img => ({ url: img.url, transferSize: img.size }));
+
+      // Full script resource data for named-vendor cost attribution.
+      // renderBlocking: a <script src> with neither async nor defer blocks
+      // parsing — cross-referenced from the live DOM since Resource Timing
+      // entries don't carry that attribute themselves.
+      const scriptBlocking = new Map();
+      try {
+        for (const el of document.querySelectorAll('script[src]')) {
+          scriptBlocking.set(el.src, !(el.async || el.defer));
+        }
+      } catch {}
+      perf.scriptResources = byType.script
+        .filter(s => s.url)
+        .map(s => ({
+          url: s.url,
+          transferSize: s.size,
+          duration: s.duration,
+          renderBlocking: scriptBlocking.has(s.url) ? scriptBlocking.get(s.url) : null,
+        }));
     } catch {}
 
     // Render-blocking scripts in <head>
@@ -433,6 +452,47 @@
     } catch (_) {}
 
     return data;
+  }
+
+  // ---- Structured Data (JSON-LD) ----
+
+  function getStructuredData() {
+    const blocks = [];
+    for (const el of document.querySelectorAll('script[type="application/ld+json"]')) {
+      const text = (el.textContent || '').trim();
+      if (text) blocks.push(text.substring(0, 20000));
+      if (blocks.length >= 20) break;
+    }
+    return blocks;
+  }
+
+  // ---- Crawler files (robots.txt, llms.txt, raw page HTML) ----
+  //
+  // Fetched from inside this already-loaded tab, not from the backend —
+  // a plain server-side request (no browser, no cookies, no real Chrome
+  // TLS fingerprint) gets blocked outright by the same WAFs that let this
+  // very page through moments ago. Same-origin fetch() from a live tab
+  // carries that tab's cookies and a genuine Chrome fingerprint, so it
+  // passes where a backend httpx call does not.
+
+  async function fetchRawText(url) {
+    try {
+      const resp = await fetch(url, { credentials: 'include', redirect: 'follow' });
+      const text = resp.ok ? await resp.text() : null;
+      return { status: resp.status, text };
+    } catch (_) {
+      return { status: 0, text: null };
+    }
+  }
+
+  async function getCrawlerFiles() {
+    const origin = window.location.origin;
+    const [robotsTxt, llmsTxt, rawHtml] = await Promise.all([
+      fetchRawText(origin + '/robots.txt'),
+      fetchRawText(origin + '/llms.txt'),
+      fetchRawText(window.location.href),
+    ]);
+    return { robots_txt: robotsTxt, llms_txt: llmsTxt, raw_html: rawHtml };
   }
 
   // ---- Images ----
@@ -1619,8 +1679,9 @@
   // ---- Main: gather all data ----
 
   async function captureAll() {
-    const [axeResults] = await Promise.all([
+    const [axeResults, crawlerFiles] = await Promise.all([
       runAxeCore(),
+      getCrawlerFiles(),
     ]);
 
     // Read any JS errors captured by injected error listener
@@ -1637,6 +1698,8 @@
       js_errors: jsErrors,
       page_features: getPageFeatures(),
       business_info: getBusinessInfo(),
+      structured_data: getStructuredData(),
+      crawler_files: crawlerFiles,
       // Sprint 5 — homepage & site-wide checks
       nav_menu_data: getNavMenuData(),
       social_links: getSocialMediaLinks(),

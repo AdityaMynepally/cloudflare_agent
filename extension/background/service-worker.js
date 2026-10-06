@@ -658,6 +658,36 @@ wsClient.onCommand(async (command) => {
       }, command.req_id);
     }
 
+    if (command.type === 'fetch_urls') {
+      // Fetches an arbitrary list of URLs (sitemap XML, typically) from
+      // inside the already-loaded agent tab — same reasoning as the
+      // crawler-files fetch in the content script: genuine browser
+      // cookies/TLS fingerprint pass WAFs that block a backend request.
+      const tabId = await getOrCreateAgentTab();
+      const urls = command.urls || [];
+      const results = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: async (urlList) => {
+          const out = [];
+          for (const u of urlList) {
+            try {
+              const resp = await fetch(u, { credentials: 'include', redirect: 'follow' });
+              const text = resp.ok ? await resp.text() : null;
+              out.push({ url: u, status: resp.status, text });
+            } catch (e) {
+              out.push({ url: u, status: 0, text: null });
+            }
+          }
+          return out;
+        },
+        args: [urls],
+      });
+      wsClient.sendCaptureResult({
+        type: 'fetch_urls_result',
+        fetched: results[0]?.result || [],
+      }, command.req_id);
+    }
+
     if (command.type === 'click') {
       const tabId = await getOrCreateAgentTab();
       await chrome.scripting.executeScript({

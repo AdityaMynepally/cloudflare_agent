@@ -79,6 +79,8 @@ class ViewportResult:
     nav_menu_data: list = field(default_factory=list)
     social_links: list = field(default_factory=list)
     page_dates: list = field(default_factory=list)
+    # Sprint 9 — parsed JSON-LD objects for this page (AEO/structured-data audit)
+    structured_data: list = field(default_factory=list)
     error: Optional[str] = None
 
     def to_dict(self) -> dict:
@@ -311,6 +313,22 @@ class AuditSession:
         "parts_form":         {"detected": False, "evidence": "", "source_page": ""},
         "live_chat":          {"detected": False, "provider": "", "evidence": "", "source_page": ""},
     })
+    # Sprint 9 — crawler access, raw-vs-rendered visibility, structured data (AEO)
+    robots_txt_check: Optional[dict] = None            # {status, url, sitemaps, ai_crawler_rules, ai_crawlers_fully_blocked}
+    llms_txt_check: Optional[dict] = None               # {status, url, size_bytes?, preview?}
+    crawler_visibility_check: Optional[dict] = None     # {status, raw_chars, rendered_chars, crawler_visible_share, band}
+    structured_data_business_check: Optional[dict] = None  # {status, record_count, primary_record, contradictions}
+    vehicle_structured_data_check: Optional[dict] = None    # {status, types, missing_fields, complete} — VDP only
+    # Internal working accumulator — JSON-LD objects collected per page as
+    # pages are audited, consumed once at the end to build
+    # structured_data_business_check. Not serialized (can hold many
+    # objects); the built check above is the serialized result.
+    structured_data_pages: list = field(default_factory=list)
+    # Sprint 10 — named third-party vendor cost attribution (homepage)
+    vendor_cost_report: Optional[dict] = None  # {vendors, first_party_bytes, first_party_count, render_blocking_count, unidentified_count}
+    # Sprint 11 — sitemap-based template discovery + spread sampling
+    sitemap_template_distribution: dict = field(default_factory=dict)  # {template_kind: url_count}
+    sitemap_sampled_pages: list = field(default_factory=list)          # [{url, template}] actually added to the audit
 
     def start(self):
         self.started_at = datetime.now().isoformat()
@@ -397,6 +415,15 @@ class AuditSession:
             "social_media_broken": self.social_media_broken,
             "social_media_no_new_tab": self.social_media_no_new_tab,
             "social_media_checked": self.social_media_checked,
+            # Sprint 9 — crawler access, raw-vs-rendered visibility, structured data
+            "robots_txt_check": self.robots_txt_check,
+            "llms_txt_check": self.llms_txt_check,
+            "crawler_visibility_check": self.crawler_visibility_check,
+            "structured_data_business_check": self.structured_data_business_check,
+            "vehicle_structured_data_check": self.vehicle_structured_data_check,
+            "vendor_cost_report": self.vendor_cost_report,
+            "sitemap_template_distribution": self.sitemap_template_distribution,
+            "sitemap_sampled_pages": self.sitemap_sampled_pages,
         }
         if self.qa_card:
             result["qa_card"] = self.qa_card.to_dict()
