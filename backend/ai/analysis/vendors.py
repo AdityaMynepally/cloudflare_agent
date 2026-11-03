@@ -150,70 +150,113 @@ def policy_for(category: str) -> dict:
     return CATEGORY_POLICY.get(category, CATEGORY_POLICY["unknown"])
 
 
+def _script_name(url: str) -> str:
+    """Last path segment, without query — the human-readable script name."""
+    try:
+        path = urlparse(url).path or ""
+    except Exception:
+        path = ""
+    name = path.rstrip("/").rsplit("/", 1)[-1]
+    return name or (urlparse(url).hostname or url)[:80]
+
+
 def aggregate_vendor_costs(script_resources: list[dict], first_party_host: str) -> dict:
     """Roll up per-script Resource Timing data to named vendors.
 
-    `script_resources`: [{url, transferSize, duration, renderBlocking}]
-    from the extension's performance capture (Resource Timing API).
+    `script_resources`: [{url, transferSize, duration, renderBlocking,
+    httpStatus, status}] from the extension's performance capture —
+    `status` is loaded | failed | not_loaded | gated (older captures omit
+    it; treated as loaded).
+
+    Known vendors are grouped by owner; unidentified hosts are grouped
+    per hostname so several unknown domains are never merged into one
+    "Unidentified" row. Each vendor carries its full `scripts` list for
+    the UI drill-down.
 
     Returns {vendors: [...], first_party_bytes, first_party_count,
-    render_blocking_count, unidentified_count}.
+    render_blocking_count, unidentified_count, blocked_count,
+    failed_count, gated_count}.
     """
+    report = {
+        "vendors": [], "first_party_bytes": 0, "first_party_count": 0,
+        "render_blocking_count": 0, "unidentified_count": 0,
+        "blocked_count": 0, "failed_count": 0, "gated_count": 0,
+    }
     if not script_resources:
-        return {
-            "vendors": [], "first_party_bytes": 0, "first_party_count": 0,
-            "render_blocking_count": 0, "unidentified_count": 0,
-        }
+        return report
 
     by_vendor: dict[str, dict] = {}
-    first_party_bytes = 0
-    first_party_count = 0
-    render_blocking_count = 0
-    unidentified_count = 0
 
     for res in script_resources:
         url = res.get("url") or ""
         size = res.get("transferSize") or 0
         duration = res.get("duration") or 0
         blocking = bool(res.get("renderBlocking"))
+        status = res.get("status") or "loaded"
 
         info = identify_vendor(url, first_party_host)
         if blocking:
-            render_blocking_count += 1
+            report["render_blocking_count"] += 1
 
         if info["is_first_party"]:
-            first_party_bytes += size
-            first_party_count += 1
+            report["first_party_bytes"] += size
+            report["first_party_count"] += 1
             continue
 
-        if info["category"] == "unknown":
-            unidentified_count += 1
+        if status == "not_loaded":
+            report["blocked_count"] += 1
+        elif status == "failed":
+            report["failed_count"] += 1
+        elif status == "gated":
+            report["gated_count"] += 1
 
-        key = info["owner"]
+        unidentified = info["category"] == "unknown"
+        if unidentified:
+            report["unidentified_count"] += 1
+
+        key = f"host:{info['hostname']}" if unidentified else f"owner:{info['owner']}"
         entry = by_vendor.setdefault(key, {
             "owner": info["owner"],
             "category": info["category"],
             "hostname": info["hostname"],
+            "hostnames": [],
+            "unidentified": unidentified,
             "script_count": 0,
             "total_bytes": 0,
             "total_duration_ms": 0,
             "render_blocking_count": 0,
+            "blocked_count": 0,
+            "failed_count": 0,
+            "gated_count": 0,
+            "scripts": [],
         })
+        if info["hostname"] not in entry["hostnames"]:
+            entry["hostnames"].append(info["hostname"])
         entry["script_count"] += 1
         entry["total_bytes"] += size
         entry["total_duration_ms"] += duration
         if blocking:
             entry["render_blocking_count"] += 1
+        if status == "not_loaded":
+            entry["blocked_count"] += 1
+        elif status == "failed":
+            entry["failed_count"] += 1
+        elif status == "gated":
+            entry["gated_count"] += 1
+        entry["scripts"].append({
+            "url": url,
+            "name": _script_name(url),
+            "hostname": info["hostname"],
+            "transfer_bytes": size,
+            "duration_ms": duration,
+            "render_blocking": blocking,
+            "status": status,
+            "http_status": res.get("httpStatus") or 0,
+        })
 
     for entry in by_vendor.values():
         entry["policy"] = policy_for(entry["category"])
+        entry["scripts"].sort(key=lambda sc: sc["duration_ms"], reverse=True)
 
-    vendors = sorted(by_vendor.values(), key=lambda v: v["total_duration_ms"], reverse=True)
-
-    return {
-        "vendors": vendors,
-        "first_party_bytes": first_party_bytes,
-        "first_party_count": first_party_count,
-        "render_blocking_count": render_blocking_count,
-        "unidentified_count": unidentified_count,
-    }
+    report["vendors"] = sorted(by_vendor.values(), key=lambda v: v["total_duration_ms"], reverse=True)
+    return report

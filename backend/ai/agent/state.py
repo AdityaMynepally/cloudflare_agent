@@ -247,8 +247,9 @@ class AuditSession:
     qa_card: Optional[QAAuditCard] = None
     overall_score: float = 0.0
     overall_grade: str = ""
-    site_summary: str = ""
-    recommendations: list[str] = field(default_factory=list)
+    site_summary: str = ""          # 2-sentence summary
+    recommendations: list[str] = field(default_factory=list)  # top_actions titles — kept for older consumers
+    top_actions: list = field(default_factory=list)  # 3-5 x {title, impact: high|medium|low, estimated_impact, next_steps[]}
     started_at: Optional[str] = None
     completed_at: Optional[str] = None
     error: Optional[str] = None
@@ -325,7 +326,7 @@ class AuditSession:
     # objects); the built check above is the serialized result.
     structured_data_pages: list = field(default_factory=list)
     # Sprint 10 — named third-party vendor cost attribution (homepage)
-    vendor_cost_report: Optional[dict] = None  # {vendors, first_party_bytes, first_party_count, render_blocking_count, unidentified_count}
+    vendor_cost_report: Optional[dict] = None  # {vendors[{..., scripts[]}], first_party_bytes, first_party_count, render_blocking_count, unidentified_count, blocked_count, failed_count, gated_count}
     # Sprint 11 — sitemap-based template discovery + spread sampling
     sitemap_template_distribution: dict = field(default_factory=dict)  # {template_kind: url_count}
     sitemap_sampled_pages: list = field(default_factory=list)          # [{url, template}] actually added to the audit
@@ -363,6 +364,7 @@ class AuditSession:
             "overall_grade": self.overall_grade,
             "site_summary": self.site_summary,
             "recommendations": self.recommendations,
+            "top_actions": self.top_actions,
             "pages_audited": self.pages_audited,
             "total_issues": self.total_issues,
             "pages": [p.to_dict() for p in self.pages],

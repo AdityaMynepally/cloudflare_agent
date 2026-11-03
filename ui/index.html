@@ -239,25 +239,32 @@
       line-height: 1.7;
       margin-bottom: 14px;
     }
-    #recs-list {
-      list-style: none;
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
+    .actions-label {
+      font-size: 0.68rem; font-weight: 600; color: var(--gray);
+      text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 8px;
     }
-    #recs-list li {
-      font-size: 0.82rem;
-      color: var(--gray);
-      padding-left: 18px;
-      position: relative;
-      line-height: 1.5;
+    #actions-list { list-style: none; display: flex; flex-direction: column; gap: 8px; }
+    .action {
+      display: grid; grid-template-columns: 22px 1fr; column-gap: 10px;
+      padding: 10px 12px; border: 1px solid var(--border-light); border-radius: 6px;
     }
-    #recs-list li::before {
-      content: '→';
-      color: var(--orange);
-      position: absolute;
-      left: 0;
+    .action-num {
+      width: 22px; height: 22px; border-radius: 50%; background: var(--light);
+      color: var(--gray); font-size: 0.72rem; font-weight: 600;
+      display: flex; align-items: center; justify-content: center;
     }
+    .action-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+    .action-title { font-size: 0.86rem; font-weight: 600; color: var(--dark); }
+    .impact-pill {
+      font-size: 0.62rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em;
+      padding: 1px 7px; border-radius: 10px;
+    }
+    .impact-pill.high   { background: #fce8e6; color: var(--red); }
+    .impact-pill.medium { background: #fef7e0; color: #b06000; }
+    .impact-pill.low    { background: var(--light); color: var(--gray); }
+    .action-impact { font-size: 0.78rem; color: var(--gray); line-height: 1.5; margin-top: 3px; }
+    .action-steps { margin: 5px 0 0; padding-left: 16px; font-size: 0.76rem; color: var(--dark); line-height: 1.5; }
+    .action-steps li::marker { color: var(--orange); }
 
     /* ---- Stats + screenshots ---- */
     #results-section { display: none; margin-top: 20px; }
@@ -1001,6 +1008,31 @@
     .vendor-cost-table td:first-child { color: var(--dark); }
     .vendor-cost-table tr:last-child td { border-bottom: none; }
     .vendor-cost-table tr:hover td { background: var(--light); }
+
+    /* Vendor drill-down: expandable vendor rows + per-script sub-table */
+    .vc-filters { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 2px; }
+    .vc-filter {
+      font: inherit; font-size: 0.68rem; color: var(--gray);
+      background: transparent; border: 1px solid var(--border-light);
+      border-radius: 12px; padding: 2px 10px; cursor: pointer;
+    }
+    .vc-filter:hover { border-color: var(--gray); }
+    .vc-filter.active { color: var(--blue); border-color: var(--blue); background: #e8f0fe; }
+    .vc-filter b { font-weight: 600; margin-left: 3px; }
+    .vendor-cost-table tr.vc-row { cursor: pointer; }
+    .vendor-cost-table tr.vc-row:focus-visible td { outline: 2px solid var(--blue); outline-offset: -2px; }
+    .vc-chev { display: inline-block; width: 10px; margin-right: 4px; text-align: center; font-size: 0.55rem; color: var(--gray); transition: transform .15s; }
+    tr.vc-row.open .vc-chev { transform: rotate(90deg); }
+    .vc-name { font-weight: 500; }
+    .vc-flags .hpc-badge { margin-left: 4px; margin-right: 0; }
+    .vendor-cost-table tr.vc-sub td { background: var(--light); font-size: 0.7rem; padding-top: 3px; padding-bottom: 3px; }
+    .vendor-cost-table tr.vc-sub td:first-child { padding-left: 32px; }
+    .vc-script-name { font-family: 'SF Mono', 'Fira Code', monospace; color: var(--dark); }
+    .vc-script-name a { color: inherit; text-decoration: none; }
+    .vc-script-name a:hover { text-decoration: underline; }
+    .vc-script-host { color: var(--gray); margin-left: 8px; }
+    .vc-st-ok { color: var(--green); }
+    .vc-empty { font-size: 0.7rem; color: var(--gray); padding: 8px 10px; }
     .status-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
     .status-dot.ok   { background: var(--green); }
     .status-dot.err  { background: var(--red); }
@@ -1189,7 +1221,8 @@
     <div id="summary-section">
       <h3>AI Audit Summary</h3>
       <p id="summary-text"></p>
-      <ul id="recs-list"></ul>
+      <div class="actions-label">Top actions</div>
+      <ol id="actions-list"></ol>
     </div>
 
     <!-- Stats + Screenshots -->
@@ -1301,7 +1334,7 @@
   const logEl       = document.getElementById('log');
   const summarySec  = document.getElementById('summary-section');
   const summaryText = document.getElementById('summary-text');
-  const recsList    = document.getElementById('recs-list');
+  const actionsList = document.getElementById('actions-list');
   const resultsSec  = document.getElementById('results-section');
   const statsRow    = document.getElementById('stats-row');
   const shotsGrid   = document.getElementById('shots-grid');
@@ -1532,15 +1565,27 @@
 
   function showSummary(full) {
     const summary = full.site_summary || '';
-    const recs    = full.recommendations || [];
-    if (!summary && !recs.length) return;
+    // Older sessions only have plain recommendation strings.
+    const actions = (full.top_actions && full.top_actions.length)
+      ? full.top_actions
+      : (full.recommendations || []).slice(0, 5).map(r => ({ title: r }));
+    if (!summary && !actions.length) return;
 
     summarySec.style.display = 'block';
     summaryText.textContent  = summary;
-    recsList.innerHTML = recs
-      .slice(0, 6)
-      .map(r => `<li>${r}</li>`)
-      .join('');
+    actionsList.previousElementSibling.hidden = !actions.length;
+    actionsList.innerHTML = actions.map((a, i) => `
+      <li class="action">
+        <span class="action-num">${i + 1}</span>
+        <div>
+          <div class="action-head">
+            <span class="action-title">${escHtml(a.title)}</span>
+            ${a.impact ? `<span class="impact-pill ${escHtml(a.impact)}">${escHtml(a.impact)} impact</span>` : ''}
+          </div>
+          ${a.estimated_impact ? `<div class="action-impact">${escHtml(a.estimated_impact)}</div>` : ''}
+          ${(a.next_steps || []).length ? `<ul class="action-steps">${a.next_steps.map(st => `<li>${escHtml(st)}</li>`).join('')}</ul>` : ''}
+        </div>
+      </li>`).join('');
   }
 
   function renderShots(full) {
@@ -2189,10 +2234,59 @@
         </details>`;
     }
 
-    // Vendor cost table — one row per identified third-party vendor
+    // Vendor drill-down — one clickable row per third-party vendor that
+    // expands to its individual scripts, with flag chips for unidentified,
+    // blocked/failed and render-blocking scripts plus a filter bar.
+    const VC_STATUS = {
+      loaded:     { label: 'Loaded',        cls: '' },
+      failed:     { label: 'Failed',        cls: 'err',  tip: 'The script request returned an HTTP error.' },
+      not_loaded: { label: 'Not loaded',    cls: 'err',  tip: 'In the page but never fetched — blocked (CSP, ad-blocker, DNS/network failure) or still pending when the page was captured.' },
+      gated:      { label: 'Consent-gated', cls: 'info', tip: 'Held back on purpose by a consent manager until the visitor opts in — not an error.' },
+    };
+
+    function vendorFlags(v) {
+      const flags = [];
+      if (v.unidentified) flags.push('unidentified');
+      if (v.blocked_count || v.failed_count) flags.push('blocked');
+      if (v.render_blocking_count) flags.push('blocking');
+      return flags;
+    }
+
+    function vendorChips(v) {
+      const neverDefer = v.policy && v.policy.defer === false;
+      const chips = [];
+      if (v.unidentified) chips.push(`<span class="hpc-badge warn" title="Host isn't in the known-vendor list — owner unknown, never assume it's safe to defer">Unidentified</span>`);
+      if (v.blocked_count) chips.push(`<span class="hpc-badge err" title="${escHtml(VC_STATUS.not_loaded.tip)}">${v.blocked_count} not loaded</span>`);
+      if (v.failed_count) chips.push(`<span class="hpc-badge err" title="${escHtml(VC_STATUS.failed.tip)}">${v.failed_count} failed</span>`);
+      if (v.render_blocking_count) chips.push(`<span class="hpc-badge ${neverDefer ? 'err' : 'warn'}" title="Script tag has neither async nor defer, so it pauses page rendering">${v.render_blocking_count} render-blocking</span>`);
+      if (v.gated_count) chips.push(`<span class="hpc-badge info" title="${escHtml(VC_STATUS.gated.tip)}">${v.gated_count} consent-gated</span>`);
+      return chips.join('');
+    }
+
+    function scriptRows(scripts, vid, open) {
+      return scripts.map(sc => {
+        const st = VC_STATUS[sc.status] || VC_STATUS.loaded;
+        const stLabel = sc.status === 'failed' && sc.http_status ? `HTTP ${sc.http_status}` : st.label;
+        const stHtml = st.cls
+          ? `<span class="hpc-badge ${st.cls}" title="${escHtml(st.tip)}">${escHtml(stLabel)}</span>`
+          : `<span class="vc-st-ok">${escHtml(stLabel)}</span>`;
+        const unfetched = sc.status === 'not_loaded' || sc.status === 'gated';
+        return `<tr class="vc-sub" data-vid="${vid}"${open ? '' : ' hidden'}>
+          <td><span class="vc-script-name"><a href="${escHtml(sc.url)}" target="_blank" rel="noopener noreferrer" title="${escHtml(sc.url)}">${escHtml(sc.name)}</a></span><span class="vc-script-host">${escHtml(sc.hostname)}</span></td>
+          <td>${stHtml}</td>
+          <td></td>
+          <td>${unfetched ? '—' : Math.round((sc.transfer_bytes || 0) / 1024) + ' KB'}</td>
+          <td>${unfetched ? '—' : Math.round(sc.duration_ms || 0) + ' ms'}</td>
+          <td>${sc.render_blocking ? '<span class="hpc-badge warn">blocking</span>' : ''}</td>
+        </tr>`;
+      }).join('');
+    }
+
     function vendorTable(vendors) {
       if (!vendors.length) return '';
-      const rows = vendors.slice(0, 15).map(v => {
+      // Auto-open the vendors with a red flag (capped, to stay tidy).
+      let autoOpen = 0;
+      const rows = vendors.map((v, i) => {
         const kb = Math.round((v.total_bytes || 0) / 1024);
         const policy = v.policy || {};
         const policyLabel = policy.defer === false ? 'never defer'
@@ -2200,22 +2294,72 @@
           : policy.defer === 'consolidate' ? 'consolidate'
           : 'deferrable';
         const policyCls = policy.defer === false ? 'err' : policy.defer === 'unknown' ? 'warn' : 'info';
-        return `<tr>
-          <td>${escHtml(v.owner)}</td>
-          <td><span class="hpc-badge ${policyCls}">${escHtml(policyLabel)}</span></td>
+        const red = v.blocked_count || v.failed_count || (policy.defer === false && v.render_blocking_count);
+        const open = red && autoOpen < 3 && ++autoOpen;
+        const name = v.unidentified ? v.hostname : v.owner;
+        const hostTitle = (v.hostnames || [v.hostname]).join(', ');
+        return `<tr class="vc-row${open ? ' open' : ''}" data-vid="${i}" data-flags="${vendorFlags(v).join(' ')}" tabindex="0" aria-expanded="${open ? 'true' : 'false'}">
+          <td><span class="vc-chev">▶</span><span class="vc-name" title="${escHtml(hostTitle)}">${escHtml(name)}</span><span class="vc-flags">${vendorChips(v)}</span></td>
+          <td><span class="hpc-badge ${policyCls}" title="${escHtml(policy.reason || '')}">${escHtml(policyLabel)}</span></td>
           <td>${v.script_count}</td>
           <td>${kb} KB</td>
           <td>${Math.round(v.total_duration_ms || 0)} ms</td>
           <td>${v.render_blocking_count || 0}</td>
-        </tr>`;
+        </tr>
+        ${scriptRows(v.scripts || [], i, open)}`;
       }).join('');
+
+      const count = f => vendors.filter(v => vendorFlags(v).includes(f)).length;
+      const filterDefs = [['all', 'All', vendors.length], ['unidentified', 'Unidentified', count('unidentified')],
+                       ['blocked', 'Blocked / failed', count('blocked')], ['blocking', 'Render-blocking', count('blocking')]]
+        .filter(([f, , n]) => f === 'all' || n);
+      const filters = filterDefs
+        .map(([f, label, n]) => `<button type="button" class="vc-filter${f === 'all' ? ' active' : ''}" data-f="${f}">${label}<b>${n}</b></button>`)
+        .join('');
+
       return `
-        <div class="vendor-cost-table-wrap">
-          <table class="vendor-cost-table">
-            <thead><tr><th>Vendor</th><th>Policy</th><th>Scripts</th><th>Size</th><th>Load Time</th><th>Blocking</th></tr></thead>
-            <tbody>${rows}</tbody>
-          </table>
+        <div class="vendor-drill">
+          ${filterDefs.length > 1 ? `<div class="vc-filters">${filters}</div>` : ''}
+          <div class="vendor-cost-table-wrap">
+            <table class="vendor-cost-table">
+              <thead><tr><th>Vendor</th><th>Policy</th><th>Scripts</th><th>Size</th><th>Load Time</th><th>Blocking</th></tr></thead>
+              <tbody>${rows}</tbody>
+            </table>
+            <div class="vc-empty" hidden>No vendors match this filter.</div>
+          </div>
         </div>`;
+    }
+
+    function wireVendorDrill(root) {
+      const drill = root.querySelector('.vendor-drill');
+      if (!drill) return;
+      const toggle = row => {
+        const open = !row.classList.contains('open');
+        row.classList.toggle('open', open);
+        row.setAttribute('aria-expanded', open);
+        drill.querySelectorAll(`tr.vc-sub[data-vid="${row.dataset.vid}"]`).forEach(r => { r.hidden = !open; });
+      };
+      drill.addEventListener('click', e => {
+        if (e.target.closest('a')) return;
+        const row = e.target.closest('tr.vc-row');
+        if (row) return toggle(row);
+        const btn = e.target.closest('.vc-filter');
+        if (!btn) return;
+        drill.querySelectorAll('.vc-filter').forEach(b => b.classList.toggle('active', b === btn));
+        const f = btn.dataset.f;
+        let shown = 0;
+        drill.querySelectorAll('tr.vc-row').forEach(row => {
+          const match = f === 'all' || row.dataset.flags.split(' ').includes(f);
+          row.hidden = !match;
+          shown += match;
+          drill.querySelectorAll(`tr.vc-sub[data-vid="${row.dataset.vid}"]`).forEach(r => { r.hidden = !match || !row.classList.contains('open'); });
+        });
+        drill.querySelector('.vc-empty').hidden = shown > 0;
+      });
+      drill.addEventListener('keydown', e => {
+        const row = e.target.closest('tr.vc-row');
+        if (row && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); toggle(row); }
+      });
     }
 
     let html = '';
@@ -2369,12 +2513,17 @@
 
       const vendors = vendorReport.vendors || [];
       const blockingNeverDefer = vendors.filter(v => v.policy && v.policy.defer === false && v.render_blocking_count > 0);
-      const st = blockingNeverDefer.length ? 'fail' : (vendorReport.unidentified_count ? 'warn' : 'pass');
-      const parts = [`${vendors.length} third-party vendor(s) identified`];
-      if (vendorReport.unidentified_count) parts.push(`${vendorReport.unidentified_count} unidentified host(s)`);
+      const blockedOrFailed = (vendorReport.blocked_count || 0) + (vendorReport.failed_count || 0);
+      const st = (blockingNeverDefer.length || blockedOrFailed) ? 'fail' : (vendorReport.unidentified_count ? 'warn' : 'pass');
+      const unidentifiedHosts = vendors.filter(v => v.unidentified).length;
+      const parts = [`${vendors.length - unidentifiedHosts} third-party vendor(s) identified`];
+      if (unidentifiedHosts) parts.push(`${unidentifiedHosts} unidentified host(s)`);
+      if (blockedOrFailed) parts.push(`${blockedOrFailed} script(s) blocked or failed`);
       if (blockingNeverDefer.length) parts.push(`${blockingNeverDefer.length} never-defer vendor(s) are render-blocking`);
+      parts.push('click a vendor to see its scripts');
 
-      html += card(st, 'Third-Party Script Cost by Vendor', parts.join(' · '), vendorTable(vendors));
+      html += card(st, 'Third-Party Script Cost by Vendor', parts.join(' · '), vendorTable(vendors),
+        'Every outside company whose code runs on the homepage, who owns it, and what it costs in load time. Unidentified hosts are code we can’t attribute to a known vendor; blocked scripts were on the page but never loaded.');
       html += `</div>`;
     }
 
@@ -2400,7 +2549,9 @@
       html += `</div>`;
     }
 
-    document.getElementById('hp-checks-body').innerHTML = html;
+    const hpBody = document.getElementById('hp-checks-body');
+    hpBody.innerHTML = html;
+    wireVendorDrill(hpBody);
     document.getElementById('hp-checks-section').style.display = 'block';
   }
 

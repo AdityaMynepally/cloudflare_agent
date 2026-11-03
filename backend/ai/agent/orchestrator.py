@@ -62,7 +62,7 @@ from ai.analysis.structured_data import (
     audit_business_structured_data,
     audit_vehicle_structured_data,
 )
-from ai.analysis.summarizer import summarize_page, summarize_site, generate_recommendations
+from ai.analysis.summarizer import summarize_page, generate_top_actions
 from scoring.calculator import calculate_page_scores, calculate_site_score, score_to_grade
 
 logger = logging.getLogger(__name__)
@@ -472,8 +472,9 @@ class AuditOrchestrator:
                     if not page.error and not page.llm_summary:
                         page.llm_summary = await summarize_page(page, self.llm)
 
-                session.site_summary = await summarize_site(session, self.llm)
-                session.recommendations = await generate_recommendations(session, self.llm)
+            # Top actions — falls back to the ranked findings without an LLM.
+            session.site_summary, session.top_actions = await generate_top_actions(session, self.llm)
+            session.recommendations = [a["title"] for a in session.top_actions]
 
             # ---- Phase 4: COMPLETED ----
             session.complete()
@@ -491,6 +492,7 @@ class AuditOrchestrator:
                 "overall_grade": session.overall_grade,
                 "site_summary": session.site_summary,
                 "recommendations": session.recommendations[:5],
+                "top_actions": session.top_actions,
                 "pages_audited": session.pages_audited,
                 "total_issues": session.total_issues,
                 "qa_card": qa_card_dict,

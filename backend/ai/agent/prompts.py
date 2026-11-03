@@ -14,38 +14,28 @@ Top issues:
 
 Write a concise, professional summary focused on the most important findings. Do not use markdown."""
 
-SITE_SUMMARY_PROMPT = """You are a website quality analyst. Given audit results for {page_count} pages on {domain}, write an executive summary (3-5 sentences).
+TOP_ACTIONS_PROMPT = """You are a website consultant writing for a car dealership's marketing manager — busy, non-technical. Below are the findings from an automated audit of {domain} ({page_count} pages, overall grade {grade}, {overall_score}/100), already ranked most-severe first.
 
-Overall score: {overall_score}/100 (Grade: {grade})
-Pages audited: {page_count}
-Total issues found: {total_issues}
+Findings:
+{findings}
 
-Per-category averages:
-- Accessibility: {avg_a11y}/100
-- SEO: {avg_seo}/100
-- Performance: {avg_perf}/100
-- Links: {avg_links}/100
+Return ONLY a JSON object, no markdown:
+{{
+  "summary": "Exactly 2 short sentences: the site's overall state, then the single biggest risk.",
+  "actions": [
+    {{
+      "title": "Imperative, specific, under 12 words",
+      "impact": "high" | "medium" | "low",
+      "estimated_impact": "One sentence on what fixing it changes for shoppers, leads or search/AI visibility",
+      "next_steps": ["1-3 concrete steps, each under 15 words, naming the page/vendor/URL when known"]
+    }}
+  ]
+}}
 
-Most common issue types:
-{common_issues}
-
-Write a professional executive summary highlighting strengths and key areas for improvement. Do not use markdown."""
-
-RECOMMENDATION_PROMPT = """You are a website quality consultant. Given these issues found across a website audit, generate 5-10 prioritized, actionable recommendations.
-
-Issues by severity:
-Critical ({critical_count}): {critical_issues}
-Serious ({serious_count}): {serious_issues}
-Moderate ({moderate_count}): {moderate_issues}
-
-Category breakdown:
-- Accessibility: {a11y_count} issues
-- SEO: {seo_count} issues
-- Performance: {perf_count} issues
-- Links: {link_count} issues
-
-Return a JSON array of strings, each being one recommendation. Prioritize by impact.
-Example: ["Add alt text to all images to improve accessibility", "Fix the 5 broken internal links on the About page"]"""
+Rules:
+- 3 to 5 actions, highest impact first. Merge related findings into one action.
+- Use only the findings above. Numbers in estimated_impact must come from the findings — never invent percentages, revenue or traffic figures.
+- No generic advice ("improve SEO", "optimize performance") — every action must point at something this audit found."""
 
 PAGE_CLASSIFICATION_PROMPT = """Classify this web page into one of these types based on its URL and title:
 - homepage, about, contact, blog, services, products, faq, privacy, careers, portfolio, login, other

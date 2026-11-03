@@ -304,7 +304,10 @@ async def download_pptx(session_id: str):
         site_summary=result.get("site_summary", ""),
         overall_score=result.get("overall_score", 0.0),
         overall_grade=result.get("overall_grade", ""),
-        recommendations=result.get("recommendations", []),
+        recommendations=[
+            f"[{a['impact'].upper()}] {a['title']}" + (f" — {a['next_steps'][0]}" if a.get("next_steps") else "")
+            for a in result.get("top_actions") or []
+        ] or result.get("recommendations", []),
         sprint_metrics={
             "broken_links_all": result.get("broken_links_all", []),
             "broken_images_all": result.get("broken_images_all", []),

@@ -98,6 +98,9 @@
           name: r.name.split('?')[0].split('/').pop() || r.name.substring(0, 80),
           size: r.transferSize || 0,
           duration: Math.round(r.duration),
+          // 0 for opaque cross-origin responses (no CORS / TAO) — only a
+          // nonzero value is a real HTTP status.
+          httpStatus: r.responseStatus || 0,
         });
       }
 
@@ -128,9 +131,11 @@
       // parsing — cross-referenced from the live DOM since Resource Timing
       // entries don't carry that attribute themselves.
       const scriptBlocking = new Map();
+      const domScripts = [];
       try {
         for (const el of document.querySelectorAll('script[src]')) {
           scriptBlocking.set(el.src, !(el.async || el.defer));
+          domScripts.push(el);
         }
       } catch {}
       perf.scriptResources = byType.script
@@ -140,7 +145,37 @@
           transferSize: s.size,
           duration: s.duration,
           renderBlocking: scriptBlocking.has(s.url) ? scriptBlocking.get(s.url) : null,
+          httpStatus: s.httpStatus,
+          status: s.httpStatus >= 400 ? 'failed' : 'loaded',
         }));
+
+      // <script src> tags the browser never fetched. A non-JS `type`
+      // (e.g. text/plain) is a consent manager holding the tag back on
+      // purpose — "gated", not blocked. Anything else with no Resource
+      // Timing entry was blocked (CSP, ad-blocker, DNS/network failure)
+      // or was still pending at capture time. Skipped entirely when the
+      // Resource Timing buffer is full (default 250), since a missing
+      // entry then proves nothing.
+      const JS_TYPES = new Set(['', 'text/javascript', 'application/javascript',
+        'module', 'text/ecmascript', 'application/ecmascript']);
+      const fetched = new Set(resources.map(r => r.name));
+      if (resources.length < 250) {
+        const seen = new Set();
+        for (const el of domScripts) {
+          const url = el.src;
+          if (!/^https?:/i.test(url) || fetched.has(url) || seen.has(url)) continue;
+          seen.add(url);
+          const type = (el.getAttribute('type') || '').trim().toLowerCase();
+          perf.scriptResources.push({
+            url,
+            transferSize: 0,
+            duration: 0,
+            renderBlocking: !(el.async || el.defer),
+            httpStatus: 0,
+            status: JS_TYPES.has(type) ? 'not_loaded' : 'gated',
+          });
+        }
+      }
     } catch {}
 
     // Render-blocking scripts in <head>
